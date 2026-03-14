@@ -4,6 +4,7 @@ import {
   Globe, AppWindow, BrainCircuit, Play, ChevronUp
 } from 'lucide-react';
 import { MiniApp } from '../lib/types';
+import SortableList, { GripVertical } from './SortableList';
 
 type BarFace = 'apps' | 'ai' | 'web';
 
@@ -14,6 +15,7 @@ interface BottomBarProps {
   onOpenLogicSheet: () => void;
   onOpenTruthLayer: () => void;
   miniApps: MiniApp[];
+  onReorderMiniApps?: (apps: MiniApp[]) => void;
 }
 
 const FACE_ICONS: Record<BarFace, React.ReactNode> = {
@@ -29,6 +31,7 @@ const BottomBar = ({
   onOpenLogicSheet,
   onOpenTruthLayer,
   miniApps,
+  onReorderMiniApps,
 }: BottomBarProps) => {
   const [prompt, setPrompt] = useState('');
   const [face, setFace] = useState<BarFace>('apps');
@@ -94,11 +97,24 @@ const BottomBar = ({
               className="text-[10px] px-2 py-1 rounded border border-forge-steel text-gray-300 hover:text-forge-ember whitespace-nowrap cursor-pointer flex items-center gap-1">
               <ShieldCheck size={11} /> Forge Layer
             </button>
-            {miniApps.map((app) => (
-              <button key={app.id} onClick={() => void onSubmitPrompt(`/app ${app.id}`)}
-                className="text-[10px] px-2 py-1 rounded border border-forge-steel text-gray-300 hover:text-forge-ember whitespace-nowrap cursor-pointer"
-                title={app.url}>{app.name}</button>
-            ))}
+            {miniApps.length > 0 && (
+              <SortableList
+                items={miniApps}
+                onReorder={(reordered) => onReorderMiniApps?.(reordered)}
+                direction="horizontal"
+                className="flex items-center gap-2"
+                renderItem={(app, dragHandle) => (
+                  <div className="flex items-center gap-0.5">
+                    <span {...dragHandle.listeners} {...dragHandle.attributes} className="cursor-grab text-gray-600 hover:text-gray-400">
+                      <GripVertical size={9} />
+                    </span>
+                    <button onClick={() => void onSubmitPrompt(`/app ${app.id}`)}
+                      className="text-[10px] px-2 py-1 rounded border border-forge-steel text-gray-300 hover:text-forge-ember whitespace-nowrap cursor-pointer"
+                      title={app.url}>{app.name}</button>
+                  </div>
+                )}
+              />
+            )}
           </div>
         </div>
       )}
