@@ -33,13 +33,6 @@ export interface InlineContext {
   flags: string[];
 }
 
-interface CachedInstruction {
-  instruction: string;
-  pattern: string;    // what to match in future
-  action: string;     // what to do when matched
-  timestamp: number;
-}
-
 function getSelectionContext(editor: Editor, grid: UseGridReturn): InlineContext {
   const { from, to } = editor.state.selection;
   const selectedText = editor.state.doc.textBetween(from, to, ' ').trim();

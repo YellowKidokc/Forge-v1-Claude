@@ -307,6 +307,54 @@ export function removeFlagFromRow(grid: GridSnapshot, row: number, flag: string)
   return setRowMeta(grid, row, { flags: r.meta.flags.filter(f => f !== flag) });
 }
 
+// ─── Semantic Query API ─────────────────────────────────────
+// The `query()` function accepts a simple predicate string and filters cells/rows.
+// Syntax: "all words where tag === 'axiom'" or "rows where flag === 'load-bearing'"
+
+export function query(grid: GridSnapshot, queryStr: string): GridQueryResult {
+  const lower = queryStr.toLowerCase().trim();
+  const cells: GridCell[] = [];
+  const rows: GridRow[] = [];
+
+  // Parse the query
+  const tagMatch = lower.match(/tag\s*===?\s*['"](.+?)['"]/);
+  const flagMatch = lower.match(/flag\s*===?\s*['"](.+?)['"]/);
+  const textMatch = lower.match(/text\s*===?\s*['"](.+?)['"]/);
+  const wordMatch = lower.match(/word\s*===?\s*['"](.+?)['"]/);
+  const typeMatch = lower.match(/type\s*===?\s*['"](.+?)['"]/);
+  const colorMatch = lower.match(/color\s*===?\s*['"](.+?)['"]/);
+  const notesMatch = lower.match(/notes?\s*contains\s*['"](.+?)['"]/);
+
+  for (const row of grid.rows) {
+    let rowMatched = false;
+
+    // Row-level filters
+    if (typeMatch && row.nodeType === typeMatch[1]) { rows.push(row); rowMatched = true; }
+    if (flagMatch && row.meta.flags.includes(flagMatch[1])) { if (!rowMatched) rows.push(row); rowMatched = true; }
+
+    for (const cell of row.cells) {
+      let cellMatched = false;
+
+      if (tagMatch && cell.meta.tags.includes(tagMatch[1])) cellMatched = true;
+      if (flagMatch && cell.meta.flags.includes(flagMatch[1])) cellMatched = true;
+      if (textMatch && cell.word.toLowerCase().includes(textMatch[1])) cellMatched = true;
+      if (wordMatch && cell.word.toLowerCase() === wordMatch[1]) cellMatched = true;
+      if (colorMatch && cell.meta.color === colorMatch[1]) cellMatched = true;
+      if (notesMatch && cell.meta.notes?.toLowerCase().includes(notesMatch[1])) cellMatched = true;
+
+      // If no specific filter matched but there's a plain text search
+      if (!tagMatch && !flagMatch && !textMatch && !wordMatch && !typeMatch && !colorMatch && !notesMatch) {
+        // Treat the whole query as a text search
+        if (cell.word.toLowerCase().includes(lower)) cellMatched = true;
+      }
+
+      if (cellMatched) cells.push(cell);
+    }
+  }
+
+  return { cells, rows };
+}
+
 // ─── Grid Serialization ─────────────────────────────────────
 // For persistence — save/load grid metadata alongside the markdown file.
 
