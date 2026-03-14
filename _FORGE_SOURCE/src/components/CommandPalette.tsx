@@ -1,5 +1,6 @@
 import { Command } from 'cmdk';
 import { SavedNotebook, ForgeSettings, AiProvider } from '../lib/types';
+import { getAllPluginCommands } from '../lib/plugins';
 
 type CenterView = 'editor' | 'logic_sheet' | 'truth_layer';
 
@@ -172,6 +173,7 @@ const CommandPalette = ({
                 { cmd: '/versions', desc: 'Open version history' },
                 { cmd: '/engines', desc: 'Open engine manager' },
                 { cmd: '/ingest', desc: 'Import data (CSV, JSON, text)' },
+                { cmd: '/plugins', desc: 'Manage plugins and extensions' },
               ].map((item) => (
                 <Command.Item
                   key={item.cmd}
@@ -184,6 +186,29 @@ const CommandPalette = ({
                 </Command.Item>
               ))}
             </Command.Group>
+
+            {(() => {
+              const pluginCommands = getAllPluginCommands();
+              if (pluginCommands.length === 0) return null;
+              return (
+                <Command.Group
+                  heading="Plugin Commands"
+                  className="[&_[cmdk-group-heading]]:text-[10px] [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-widest [&_[cmdk-group-heading]]:text-gray-500 [&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:py-1.5"
+                >
+                  {pluginCommands.map((cmd) => (
+                    <Command.Item
+                      key={cmd.id}
+                      value={`plugin ${cmd.pluginName} ${cmd.title} ${cmd.id}`}
+                      onSelect={() => runAndClose(() => void onSubmitPrompt(`/plugin:${cmd.id} `))}
+                      className="flex items-center gap-2 px-3 py-2 text-xs text-gray-300 rounded cursor-pointer data-[selected=true]:bg-forge-ember/10 data-[selected=true]:text-forge-ember transition-colors"
+                    >
+                      <span className="text-purple-400/60 text-[9px]">{cmd.pluginName}</span>
+                      <span>{cmd.title}</span>
+                    </Command.Item>
+                  ))}
+                </Command.Group>
+              );
+            })()}
           </Command.List>
         </Command>
       </div>

@@ -14,6 +14,7 @@ import VersionBrowser from './components/VersionControl/VersionBrowser';
 import MirrorView from './components/DataMirror/MirrorView';
 import EngineManager from './components/GlobalEngine/EngineManager';
 import IngestionView from './components/DataIngestion/IngestionView';
+import PluginManagerView from './components/PluginManager/PluginManagerView';
 import { FileEntry, NoteMetadata, SavedNotebook, ForgeSettings, MiniApp } from './lib/types';
 // TopCommandBar replaced by BottomBar — do not re-import
 import { DEFAULT_SETTINGS, parseSettings, SETTINGS_STORAGE_KEY } from './lib/settings';
@@ -80,6 +81,7 @@ function App() {
   const [mirrorViewOpen, setMirrorViewOpen] = useState(false);
   const [engineManagerOpen, setEngineManagerOpen] = useState(false);
   const [ingestionViewOpen, setIngestionViewOpen] = useState(false);
+  const [pluginManagerOpen, setPluginManagerOpen] = useState(false);
   const [settings, setSettings] = useState<ForgeSettings>(DEFAULT_SETTINGS);
   const [centerView, setCenterView] = useState<CenterView>('editor');
   const [filesSnapshot, setFilesSnapshot] = useState<FileEntry[]>([]);
@@ -457,6 +459,11 @@ function App() {
         return true;
       }
 
+      if (command === 'plugins' || command === 'plugin') {
+        setPluginManagerOpen(true);
+        return true;
+      }
+
       if (command === 'ai') {
         if (!argument) {
           setAiPanelOpen(true);
@@ -632,6 +639,11 @@ function App() {
       <IngestionView
         open={ingestionViewOpen}
         onClose={() => setIngestionViewOpen(false)}
+      />
+
+      <PluginManagerView
+        open={pluginManagerOpen}
+        onClose={() => setPluginManagerOpen(false)}
       />
 
       <VersionBrowser
