@@ -3,10 +3,11 @@
 
 > **One sentence:** A desktop app where the user writes in an Obsidian/Notion hybrid editor, every character lives in an addressable Excel-like grid underneath, and an AI layer below executes any instruction the user gives by highlighting text — eliminating the need for plugins forever.
 
-**Version:** 1.0.0  
+**Version:** 1.1.0  
 **Stack:** Tauri 2 · React 19 · TypeScript · TipTap (ProseMirror) · Rust · PostgreSQL  
 **Identifier:** `com.theophysics.forge`  
 **Author:** David Lowery / POF 2828  
+**Last Updated:** 2026-03-13  
 
 ---
 
@@ -34,18 +35,30 @@ This is the breakthrough. This is the product.
 - Rich text, headings, links, tables, callouts, YAML frontmatter
 - **Built with TipTap (ProseMirror) in React + TypeScript** ✅
 
-### Layer 2: Grid (The addressable substrate) ❌ NOT BUILT
-- Every character, word, and sentence has a coordinate — like Excel cells
-- AI can read any cell, write any cell, relate any cell to any other cell
-- Not visible by default — it's the structural backbone
-- Toggle view: user can switch to see the grid
-- Grid enables precision: AI knows Row 14, Cell B7 — not "which paragraph?"
+### Layer 2: Grid (The addressable substrate) ✅ BUILT
+- Every block in the TipTap document maps to a GridRow
+- Every word within a block maps to a GridCell with `[row, col]` coordinates
+- Every cell carries ProseMirror `from/to` absolute positions for precise cursor bridging
+- Parallel data structure that stays in sync with TipTap's document model via debounced rebuild (150ms)
+- Extensible metadata per cell and per row: tags, flags, links, color, confidence, notes
+- Immutable mutation API for React state compatibility
+- Serialization/deserialization for metadata persistence across doc edits
+- Query API: by tag, by flag, by text, by cell range
+- Toggle grid view (`Ctrl+G`) shows side-by-side cell inspector
+- Status bar shows live `{rows}r/{cells}c` count
 
-### Layer 3: AI (The execution engine) ⚠️ PARTIALLY BUILT
-- Lives under everything, has full access to the grid
-- User highlights text → chat box appears inline → user says what they want → AI executes
-- No plugins. No marketplace. No config files. Just: highlight, instruct, done
-- The AI writes whatever code is needed on the fly, executes it, result shows in Layer 1
+### Layer 3: AI (The execution engine) ✅ BUILT — enhancement pending
+- Three-provider streaming engine: Anthropic (Claude Sonnet 4), OpenAI (GPT-4.1), local Ollama
+- Three-role system: Interface (direct interaction), Logic (structural validation), Copilot (predictive next actions)
+- Per-role provider routing: shared engine or split engine (each role on its own provider/model)
+- Inline AI chat bubble: select text → chat box appears at selection → type instruction → AI executes → result in Layer 1
+- Inline chat is grid-aware: shows `[row,col]` coordinates, node type, tags, flags in context header
+- Quick actions: Tag, Flag Row, Explain, Fix Grammar, Summarize, Link To
+- Smart replace detection: instructions containing "fix", "rewrite", "translate", etc. auto-replace selection
+- Promoted block commands: `/PROBE` (structural integrity), `/EAST` (steelman objection), `/CONNECT` (cross-domain bridge)
+- AI runtime event logging with deduplication (8-minute cooldown, 120-event ring buffer)
+- Background roles fire on 6-second debounce after content changes
+- **Pending:** Cached instruction enforcement engine (instructions stored and auto-enforced on future edits)
 
 ---
 
@@ -58,10 +71,10 @@ This is the breakthrough. This is the product.
 - Rollback to any point
 - Branch for experimental edits
 
-### Pillar 2: Content Layer (Three-Layer Editor) ⚠️ PARTIALLY BUILT
+### Pillar 2: Content Layer (Three-Layer Editor) ✅ CORE COMPLETE
 - Obsidian/Notion hybrid surface ✅
-- Excel grid underneath ❌
-- AI underneath that ⚠️
+- Excel grid underneath ✅
+- AI underneath that ✅
 - File tree sidebar ✅
 - Notebook/vault concept ✅
 
@@ -89,14 +102,19 @@ This is the breakthrough. This is the product.
 |-----------|-----------|--------|
 | Runtime | Tauri v2 (Rust backend + webview) | ✅ Built |
 | Frontend | React 19 + TypeScript + Vite 7 | ✅ Built |
-| Editor | TipTap (ProseMirror) | ✅ Built (Layer 1 only) |
+| Editor | TipTap (ProseMirror) | ✅ Built (Layer 1) |
 | Styling | Tailwind CSS 4 | ✅ Built |
+| AI Service | Anthropic + OpenAI + Ollama streaming | ✅ Built |
+| AI Roles | Interface / Logic / Copilot (3-role system) | ✅ Built |
+| AI Prompts | /PROBE, /EAST, /CONNECT (Theophysics-aligned) | ✅ Built |
+| AI Runtime | Event logging, dedup, cooldown, ring buffer | ✅ Built |
 | AI Sidecar | Python script (ai_sidecar.py) | ✅ Built |
+| Grid Layer | Parallel addressable substrate (`grid.ts` + `useGrid.ts`) | ✅ Built |
+| Inline AI Chat | Selection → Instruct bubble (grid-aware) | ✅ Built |
 | Database | PostgreSQL (192.168.1.177:2665) | ✅ Connected |
 | Icons | Lucide React | ✅ Installed |
 | Animation | Framer Motion | ✅ Installed |
-| Grid Layer | — | ❌ NOT BUILT |
-| Inline AI Chat | — | ❌ NOT BUILT |
+| Cached Instructions | Instruction enforcement engine | ❌ NOT BUILT |
 | Version Control | — | ❌ NOT BUILT |
 | Data Mirror | — | ❌ NOT BUILT |
 | Global Engine | — | ❌ NOT BUILT |
@@ -104,6 +122,139 @@ This is the breakthrough. This is the product.
 | Plugin Platform | — | ❌ NOT BUILT |
 | Data Ingestion Layer | — | ❌ NOT BUILT |
 | Command Palette | — | ❌ NOT BUILT |
+
+---
+
+### Grid Layer — Technical Architecture (`src/lib/grid.ts` — ~300 lines)
+
+The grid is a pure, stateless parallel data structure. It takes a ProseMirror JSON document and produces a `GridSnapshot`.
+
+**Data flow:**
+```
+TipTap ProseMirror Doc (JSON)
+  → buildGrid(doc) walks all block nodes
+    → Each block node → GridRow (paragraph, heading, listItem, etc.)
+      → Text tokenized by word boundaries (regex \S+) → GridCell[]
+        → Each cell: [row, col] + word text + from/to ProseMirror positions + CellMeta
+```
+
+**Types:**
+```typescript
+interface GridCell {
+  row: number;
+  col: number;
+  word: string;           // text snapshot
+  from: number;           // ProseMirror absolute position (start)
+  to: number;             // ProseMirror absolute position (end)
+  meta: CellMeta;         // tags, flags, links, color, confidence, notes, extensible
+}
+
+interface GridRow {
+  index: number;
+  nodeId: string;         // stable ID for TipTap node
+  nodeType: string;       // 'paragraph', 'heading', 'listItem', etc.
+  level?: number;         // heading level (1-6)
+  from: number;           // node start position
+  to: number;             // node end position
+  cells: GridCell[];
+  meta: CellMeta;         // row-level metadata
+}
+
+interface GridSnapshot {
+  rows: GridRow[];
+  version: number;
+  timestamp: number;
+  totalRows: number;
+  totalCells: number;
+}
+```
+
+**Query API:** `getCell(row, col)`, `getRow(row)`, `getCellRange(fromRow, fromCol, toRow, toCol)`, `queryByTag(tag)`, `queryByFlag(flag)`, `queryByText(search)`
+
+**Mutation API (immutable):** `setCellMeta`, `setRowMeta`, `addTagToCell`, `addFlagToRow`, `removeFlagFromRow` — all return new GridSnapshot objects.
+
+**Serialization:** `serializeGridMeta` saves only cells/rows with non-empty metadata. `deserializeGridMeta` rehydrates with drift-tolerance — if a cell's word doesn't match at the expected column after an edit, it searches the row for the word by text matching.
+
+**React hook** (`src/hooks/useGrid.ts` — ~180 lines):
+```typescript
+const grid = useGrid(editor);
+// Exposes: snapshot, getCell, getRow, getCellRange, queryByTag, queryByFlag,
+//          queryByText, addTag, setFlag, removeFlag, updateCellMeta,
+//          updateRowMeta, highlightCell, highlightRow, rebuild
+```
+
+Listens to `editor.on('update')`, debounces at 150ms, rebuilds from `editor.getJSON()`, re-applies stored metadata across rebuilds via serialize/deserialize cycle.
+
+**Known limitation:** Position mapping (`from/to`) is calculated as `nodeStart + 1 + token.offsetStart`, which assumes flat text inside nodes. Heavily nested inline marks (bold inside italic inside a link) can shift offsets by a few characters. Fix path: walk ProseMirror's actual TextNode offsets instead of character math on extracted text. Not a blocker for current use.
+
+---
+
+### AI Service — Technical Architecture (`src/lib/ai.ts` — ~400 lines)
+
+Multi-provider streaming AI engine supporting three backends and three roles.
+
+**Providers:**
+| Provider | Endpoint | Model | Auth |
+|----------|----------|-------|------|
+| Anthropic | `api.anthropic.com/v1/messages` | `claude-sonnet-4-20250514` | `sk-ant-*` API key |
+| OpenAI | `api.openai.com/v1/chat/completions` | `gpt-4.1` | `sk-*` API key |
+| Ollama | `127.0.0.1:11434/api/chat` | Configurable (default: `llama3.1:8b`) | None (local) |
+
+All three implement SSE/NDJSON streaming with proper `AbortSignal` support, error handling, and graceful abort (partial text returned on cancel).
+
+**Three-Role System:**
+| Role | System Prompt | Purpose |
+|------|--------------|---------|
+| **Interface** | Direct user interaction — execute writing and thinking tasks | Primary chat partner |
+| **Logic** | Validate structure, assumptions, consistency, contradictions | Background structural scan |
+| **Copilot** | Anticipate next 2-4 useful actions, provide concrete next steps | Background action suggestions |
+
+**Role routing:** Two modes controlled by `aiRoleRouting` setting:
+- **Shared** — all roles use the same provider/model (default)
+- **Split** — each role can be routed to a different provider/model independently
+
+**Key functions:**
+- `runAiChat(messages, systemPrompt, callbacks, signal, provider?, model?)` — general streaming chat
+- `runAiRoleChat(role, messages, callbacks, signal, contextBlock?, extraPrompt?)` — role-aware chat with auto-routing
+- `runAiCommand(command, blockContent, blockType, systemPrompt, callbacks, signal, workspaceContext?)` — promoted block commands
+
+**Promoted Block Commands** (`src/lib/aiPrompts.ts`):
+- `/PROBE` — structural integrity analysis (find exact hold/break point)
+- `/EAST` — steelman strongest objection (version that makes serious physicist/theologian pause)
+- `/CONNECT` — cross-domain structural bridge (shared logical architecture, not metaphorical similarity)
+
+Each prompt is Theophysics framework-aligned with specific output format constraints.
+
+**AI Runtime** (`src/lib/aiRuntime.ts` — ~100 lines):
+- Event ring buffer (120 events max, localStorage-persisted)
+- Deduplication: same role + kind + summary + provider + model within 8-minute cooldown window → suppressed
+- Events: `{ id, role, kind, summary, provider, model, status, createdAt }`
+
+---
+
+### Inline AI Chat — Technical Architecture (`src/components/Editor/InlineAiChat.tsx` — ~260 lines)
+
+The core interaction loop of FORGE. Select → Instruct → Done.
+
+**How it works:**
+1. User selects text in the editor (`Ctrl+I` or context menu)
+2. Chat bubble appears at the DOM coordinates of the selection start
+3. Context header shows: `[row,col]` grid coordinates, node type, active tags, active flags, truncated selection text
+4. User types natural language instruction
+5. `getSelectionContext()` builds `InlineContext`: selectedText, selectionFrom/To, gridRow, gridCol, nodeType, surroundingText (prev + current + next row), tags, flags
+6. AI receives full context + instruction → streams response
+7. Smart replace: if instruction contains "fix", "rewrite", "replace", "correct", "improve", "translate", "simplify", "expand" → AI result auto-replaces the selection in the editor
+8. Manual options: Replace button, Copy button, Done button
+
+**Quick action buttons:** Tag as..., Flag row, Explain, Fix grammar, Summarize, Link to...
+
+- "Tag as..." prompts for tag name → calls `grid.addTag(row, col, tag)`
+- "Flag row" prompts for flag → calls `grid.setFlag(row, flag)`
+- Others pre-fill the instruction input
+
+**Keyboard:** `Enter` submits, `Escape` closes, click outside closes.
+
+---
 
 ### Rust Backend (`_FORGE_SOURCE/src-tauri/src/lib.rs` — 416 lines)
 - `set_vault` / `get_vault_files` — vault selection and file scanning
@@ -115,82 +266,44 @@ This is the breakthrough. This is the product.
 
 ### React Frontend (`_FORGE_SOURCE/src/`)
 - `App.tsx` (580 lines) — main app: notebooks, file tree, editor, AI panel, settings, routing
-- `ForgeEditor.tsx` — TipTap-based markdown editor with autosave
-- `InlineAiChat.tsx` — inline AI chat component (exists but needs grid integration)
+- `ForgeEditor.tsx` (578 lines) — TipTap editor with grid integration, inline AI chat, context menu, autosave, `Ctrl+G` grid toggle, `Ctrl+I` inline chat, status bar with grid stats
+- `InlineAiChat.tsx` (260 lines) — selection → instruct bubble (grid-aware, quick actions, smart replace)
 - `AiPanel.tsx` — slide-out AI conversation panel (Ctrl+Shift+A)
 - `BottomBar.tsx` — command bar with `/commands`
 - `Sidebar.tsx` — file tree navigation with notebook switching
-- `SettingsPage.tsx` — settings UI with AI provider config
+- `SettingsPage.tsx` — settings UI with AI provider config, per-role routing
 - `LogicSheet.tsx` — spreadsheet-style logic view miniapp
 - `TruthLayerWorkbench.tsx` — truth layer management miniapp
-- `ai.ts` — three-role AI provider routing (Interface, Logic, Copilot)
-- `aiRuntime.ts` — AI event logging and runtime management
-- `grid.ts` — grid data structure (exists but needs full implementation)
+
+### Libraries (`_FORGE_SOURCE/src/lib/`)
+- `grid.ts` (300 lines) — parallel addressable grid data structure with full query/mutation/serialization API
+- `ai.ts` (400 lines) — three-provider streaming AI service with role routing
+- `aiPrompts.ts` — /PROBE, /EAST, /CONNECT Theophysics-aligned prompts
+- `aiRuntime.ts` (100 lines) — AI event logging with dedup ring buffer
+- `markdown.ts` — markdown ↔ HTML conversion
+- `noteMeta.ts` — note metadata extraction
 - `pythonSidecar.ts` — Python execution bridge
 - `settings.ts` — settings management with localStorage persistence
+- `types.ts` — shared TypeScript types
 
-### AI Roles (Three-Role System) ⚠️ PARTIALLY BUILT
-| Role | Purpose | Status |
-|------|---------|--------|
-| **Interface** | Direct user interaction — respond to prompts, execute instructions | ✅ Working |
-| **Logic** | Background structural scan — contradictions, drift, weak assumptions | ✅ Working |
-| **Copilot** | Background action suggestions — next highest-leverage moves | ✅ Working |
-
-Background roles fire on a 6-second debounce after note content changes.
+### Hooks (`_FORGE_SOURCE/src/hooks/`)
+- `useGrid.ts` (180 lines) — React hook: grid sync, debounced rebuild, metadata persistence, full query/mutation/highlight API
 
 ---
 
 ## WHAT NEEDS TO BE BUILT
 
-### PRIORITY 1: Grid Layer (Layer 2) — THE FOUNDATION
+### PRIORITY 1: ~~Grid Layer~~ ✅ COMPLETE
 
-This is the hardest piece and everything depends on it.
+### PRIORITY 2: Cached Instruction Enforcement Engine
 
-**Requirements:**
-- Every TipTap node (paragraph, heading, list item) gets a stable ID
-- Within each node, every word gets an index
-- Optionally: every character gets an index
-- Grid is a data structure that mirrors the TipTap document
-- Grid updates automatically as user types
-- Grid is queryable: "give me all words in paragraph 5" or "what's at position [14, 3]?"
-- Grid is writable: AI can modify grid cells and changes reflect in Layer 1
-
-**Approach options:**
-1. TipTap decoration system — annotate existing nodes with position metadata
-2. Parallel data structure — separate grid that syncs with TipTap document model
-3. ProseMirror node attributes — store grid coordinates as node/mark attributes
-
-**Output:** A `useGrid()` hook that provides:
-```typescript
-grid.getCell(row, col)              // returns content + metadata
-grid.setCell(row, col, value)       // writes to grid + syncs to editor
-grid.query("all words where tag === 'axiom'")  // semantic query
-grid.highlight(row, col, style)     // visual feedback
-grid.subscribe(row, col, callback)  // watch for changes
-```
-
-**Files to create/modify:**
-- `src/lib/grid.ts` — full grid data structure (exists as stub, needs implementation)
-- `src/hooks/useGrid.ts` — React hook (exists as stub)
-- `src/components/Editor/GridLayer.tsx` — NEW: grid visualization overlay
-- `src/components/Editor/ForgeEditor.tsx` — integrate grid sync
-
----
-
-### PRIORITY 2: Inline AI Chat (Selection → Instruct Loop)
+The inline AI chat works, but instructions are fire-and-forget. The next step is making them persistent and self-enforcing.
 
 **Requirements:**
-- User selects text in the editor
-- Small chat bubble appears inline (near selection, NOT in sidebar)
-- User types instruction in natural language
-- AI reads: selection + grid context + instruction
-- AI executes (tag, link, format, transform, generate, etc.)
-- Result appears in Layer 1
-- Instruction is cached for future enforcement
-
-**Key insight:** The chat bubble is NOT a full chat interface. It's a command line that understands English. Quick, inline, disappears after execution.
-
-**Three stored objects the system needs:**
+- When user gives an instruction via inline chat, store it as a `CachedInstruction`
+- Each cached instruction has: pattern (what to match), action (what to do), scope (local/global), creation context
+- On every document edit, the enforcement engine scans for pattern matches and auto-applies actions
+- Three stored object types the system needs:
 
 1. **Canonical Anchors** — selected text marked as canonical with UUID, label, grain size, scope (local/global), lock state
 2. **Display Rules** — trigger (text match / semantic tag / domain) → color + shape + opacity + scope
@@ -201,13 +314,10 @@ grid.subscribe(row, col, callback)  // watch for changes
 - "When I write Grace, highlight amber, circle shape" → display rule fires everywhere
 - "This paragraph is load-bearing. Flag if anything contradicts it." → canonical anchor + contradiction watch
 - "Anytime I write entropy in a physics context, link to E7.1" → contextual auto-link
-- "Summarize this section in one sentence and put it in the margin" → AI generates + places
-- "Run TTS on this document when I click the checkmark" → engine trigger
 
-**Files to create/modify:**
-- `src/components/Editor/InlineAiChat.tsx` — exists, needs grid integration + cached instructions
-- `src/lib/annotations.ts` — NEW: canonical anchors, display rules, expansion macros store
-- `src/lib/instructionCache.ts` — NEW: cached instruction enforcement engine
+**Files to create:**
+- `src/lib/annotations.ts` — canonical anchors, display rules, expansion macros store
+- `src/lib/instructionCache.ts` — cached instruction enforcement engine
 
 ---
 
@@ -428,13 +538,15 @@ interface NoteGateway {
 
 ```
 1. SELECT   — any grain size: letter / word / sentence / block / paragraph
-2. CHAT BOX — pops up inline, right where you are
+2. CHAT BOX — pops up inline, right where you are (Ctrl+I)
 3. DECLARE  — say what it is, what it means, what to do with it
 4. CACHED   — AI stores it losslessly, enforces it going forward
 ```
 
 No forms. No schema design. No dropdowns. No "pick a type from this list."
 You teach the system by talking to it, exactly like you'd explain it to a person.
+
+**Steps 1-3 are live.** Step 4 (cached enforcement) is next priority.
 
 ---
 
@@ -450,10 +562,10 @@ Forge/
 │   ├── src/                        ← React frontend
 │   │   ├── components/
 │   │   │   ├── Editor/
-│   │   │   │   ├── ForgeEditor.tsx      ← Extend with grid integration
+│   │   │   │   ├── ForgeEditor.tsx      ← ✅ Grid integrated, inline AI, context menu, Ctrl+G/Ctrl+I
 │   │   │   │   ├── EditorToolbar.tsx
-│   │   │   │   ├── InlineAiChat.tsx     ← Extend with cached instructions
-│   │   │   │   ├── GridLayer.tsx        ← NEW: Grid visualization
+│   │   │   │   ├── InlineAiChat.tsx     ← ✅ Selection→Instruct bubble (grid-aware, quick actions)
+│   │   │   │   ├── GridLayer.tsx        ← NEW: Grid visualization overlay (optional)
 │   │   │   │   └── PromotedBlock*.ts/x
 │   │   │   ├── DataMirror/             ← NEW: Mirror folder UI
 │   │   │   ├── VersionControl/          ← NEW: Version browser UI
@@ -461,9 +573,10 @@ Forge/
 │   │   │   ├── miniapps/               ← LogicSheet, TruthLayerWorkbench
 │   │   │   └── [Sidebar, AiPanel, BottomBar, Settings, etc.]
 │   │   ├── lib/
-│   │   │   ├── grid.ts                  ← Grid data structure (extend)
-│   │   │   ├── ai.ts                    ← AI provider routing
-│   │   │   ├── aiRuntime.ts             ← Runtime event log
+│   │   │   ├── grid.ts                  ← ✅ Parallel grid: build, query, mutate, serialize (~300 lines)
+│   │   │   ├── ai.ts                    ← ✅ 3-provider streaming + 3-role routing (~400 lines)
+│   │   │   ├── aiPrompts.ts             ← ✅ /PROBE, /EAST, /CONNECT prompts
+│   │   │   ├── aiRuntime.ts             ← ✅ Event logging + dedup ring buffer (~100 lines)
 │   │   │   ├── annotations.ts           ← NEW: anchors, display rules, macros
 │   │   │   ├── instructionCache.ts      ← NEW: cached instruction enforcement
 │   │   │   ├── mirror.ts               ← NEW: Data mirror logic
@@ -472,9 +585,9 @@ Forge/
 │   │   │   ├── ingestion.ts            ← NEW: Data ingestion layer
 │   │   │   └── [settings, types, markdown, pythonSidecar, noteMeta]
 │   │   └── hooks/
-│   │       └── useGrid.ts              ← Grid hook (extend)
+│   │       └── useGrid.ts              ← ✅ React hook: sync, rebuild, metadata persistence (~180 lines)
 │   ├── src-tauri/                      ← Rust backend
-│   │   ├── src/lib.rs                  ← Add: grid, mirror, version, engine commands
+│   │   ├── src/lib.rs                  ← Add: mirror, version, engine commands
 │   │   ├── Cargo.toml                  ← Dependencies
 │   │   └── tauri.conf.json             ← App config
 │   ├── scripts/                        ← Python sidecar, truth-layer sync
@@ -542,6 +655,8 @@ Binary lands in `_FORGE_SOURCE/src-tauri/target/release/`.
 ### Keyboard Shortcuts
 | Shortcut | Action |
 |----------|--------|
+| `Ctrl+G` | Toggle Grid View (side-by-side cell inspector) |
+| `Ctrl+I` | Open Inline AI Chat on selection |
 | `Ctrl+Shift+A` | Toggle AI Panel |
 | `Ctrl+,` | Toggle Settings |
 
@@ -555,6 +670,8 @@ Binary lands in `_FORGE_SOURCE/src-tauri/target/release/`.
 - Do NOT add Electron or any non-Tauri runtime
 - Do NOT require additional software beyond what Tauri needs
 - Do NOT run two independent write pipelines to the same note without lock/queue
+- Do NOT change the grid's immutable mutation pattern (React state depends on it)
+- Do NOT remove the from/to ProseMirror position bridge in GridCell (the inline AI chat depends on it)
 
 ---
 
