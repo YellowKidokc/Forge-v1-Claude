@@ -9,6 +9,7 @@ import NodeSidePanel from './components/NodeSidePanel';
 import SettingsPage from './components/SettingsPage';
 import LogicSheet from './components/miniapps/LogicSheet';
 import TruthLayerWorkbench from './components/miniapps/TruthLayerWorkbench';
+import CommandPalette from './components/CommandPalette';
 import { FileEntry, NoteMetadata, SavedNotebook, ForgeSettings, MiniApp } from './lib/types';
 // TopCommandBar replaced by BottomBar — do not re-import
 import { DEFAULT_SETTINGS, parseSettings, SETTINGS_STORAGE_KEY } from './lib/settings';
@@ -70,10 +71,12 @@ function App() {
   const [activeNoteMarkdown, setActiveNoteMarkdown] = useState('');
   const [refreshToken, setRefreshToken] = useState(0);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [settings, setSettings] = useState<ForgeSettings>(DEFAULT_SETTINGS);
   const [centerView, setCenterView] = useState<CenterView>('editor');
   const [filesSnapshot, setFilesSnapshot] = useState<FileEntry[]>([]);
   const [queuedPrompt, setQueuedPrompt] = useState<PromptPacket | null>(null);
+  const [activeChatThreadId, setActiveChatThreadId] = useState<string | null>(null);
   const promptCounterRef = useRef(1);
   const backgroundSignatureRef = useRef<string>('');
   const logicAbortRef = useRef<AbortController | null>(null);
@@ -88,6 +91,10 @@ function App() {
       if ((e.ctrlKey || e.metaKey) && e.key === ',') {
         e.preventDefault();
         setSettingsOpen((prev) => !prev);
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setCommandPaletteOpen((prev) => !prev);
       }
     };
     window.addEventListener('keydown', handleKeyDown);
@@ -490,6 +497,13 @@ function App() {
         refreshToken={refreshToken}
         onOpenSettings={() => setSettingsOpen(true)}
         onFilesSnapshotChange={setFilesSnapshot}
+        onSelectChatThread={(id) => {
+          setActiveChatThreadId(id || null);
+          if (id) setAiPanelOpen(true);
+        }}
+        activeChatThreadId={activeChatThreadId}
+        onUseSnippet={(content) => queuePrompt(content, 'interface')}
+        onReorderNotebooks={setSavedNotebooks}
       />
 
       <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden">
@@ -530,6 +544,7 @@ function App() {
           onOpenLogicSheet={() => setCenterView('logic_sheet')}
           onOpenTruthLayer={() => setCenterView('truth_layer')}
           miniApps={settings.miniApps}
+          onReorderMiniApps={(apps) => setSettings((prev) => ({ ...prev, miniApps: apps }))}
         />
       </div>
 
@@ -549,6 +564,8 @@ function App() {
         }}
         workspaceContext={workspaceContext}
         aiUseWorkspaceContext={settings.aiUseWorkspaceContext}
+        activeThreadId={activeChatThreadId}
+        onActiveThreadChange={setActiveChatThreadId}
       />
 
       {!aiPanelOpen && (
@@ -571,6 +588,19 @@ function App() {
         onUpdateSettings={setSettings}
         onClose={() => setSettingsOpen(false)}
         onLaunchMiniApp={launchMiniApp}
+      />
+
+      <CommandPalette
+        open={commandPaletteOpen}
+        onClose={() => setCommandPaletteOpen(false)}
+        savedNotebooks={savedNotebooks}
+        onActivateNotebook={activateNotebook}
+        onOpenSettings={() => setSettingsOpen(true)}
+        onOpenAi={() => setAiPanelOpen(true)}
+        onSetCenterView={setCenterView}
+        onSubmitPrompt={handlePromptSubmit}
+        settings={settings}
+        onUpdateSettings={setSettings}
       />
     </div>
   );
