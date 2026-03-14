@@ -21,6 +21,7 @@ import { createSnapshot } from '../../lib/versioning';
 import { useGrid } from '../../hooks/useGrid';
 import InlineAiChat from './InlineAiChat';
 import GridLayer from './GridLayer';
+import { findMatches, getRules } from '../../lib/annotations';
 
 interface EditorContextMenu {
   x: number;
@@ -68,6 +69,7 @@ const ForgeEditor = ({
   const [buildStory, setBuildStory] = useState(false);
   const [showGrid, setShowGrid] = useState(false);
   const [showInlineChat, setShowInlineChat] = useState(false);
+  const [annotationVersion, setAnnotationVersion] = useState(0);
 
   const editor = useEditor({
     extensions: [
@@ -109,6 +111,31 @@ const ForgeEditor = ({
 
   // Grid Layer — addressable substrate under the editor
   const grid = useGrid(editor);
+
+  // Display Engine — apply visual decorations from stored display rules to grid cells
+  useEffect(() => {
+    if (!editor || grid.snapshot.totalCells === 0) return;
+    const rules = getRules();
+    if (rules.length === 0) return;
+
+    // Walk grid rows and apply display rule colors to matching cells
+    for (const row of grid.snapshot.rows) {
+      const rowText = row.cells.map(c => c.word).join(' ');
+      const matches = findMatches(rowText, filePath ?? undefined);
+      for (const match of matches) {
+        if (match.type !== 'rule' || !match.rule) continue;
+        // Find which cells overlap this match
+        let charPos = 0;
+        for (const cell of row.cells) {
+          const cellEnd = charPos + cell.word.length;
+          if (charPos < match.matchEnd && cellEnd > match.matchStart) {
+            grid.updateCellMeta(cell.row, cell.col, { color: match.rule.color });
+          }
+          charPos = cellEnd + 1; // +1 for the space between words
+        }
+      }
+    }
+  }, [editor, grid.snapshot.version, annotationVersion, filePath]);
 
   useEffect(() => {
     if (!filePath || !editor) return;
@@ -358,7 +385,9 @@ const ForgeEditor = ({
               <InlineAiChat
                 editor={editor}
                 grid={grid}
+                docPath={filePath ?? undefined}
                 onClose={() => setShowInlineChat(false)}
+                onAnnotationChange={() => setAnnotationVersion(v => v + 1)}
                 onExecute={async (instruction, ctx) => {
                   // Build AI prompt with grid context
                   const prompt = [
