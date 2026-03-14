@@ -112,6 +112,7 @@ fn is_ignored_folder(name: &str) -> bool {
         || name == ".obsidian"
         || name == "_versions"
         || name == "_data"
+        || name == "_engines"
 }
 
 fn sanitize_note_segment(segment: &str) -> String {
@@ -637,6 +638,252 @@ async fn read_mirror_file(
     fs::read_to_string(&mirror_path).map_err(|e| format!("Failed to read mirror file: {}", e))
 }
 
+// ─── Engine Commands ────────────────────────────────────────────
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+struct EngineEntry {
+    id: String,
+    config_path: String,
+    script_path: Option<String>,
+    raw_yaml: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+struct EngineRunResult {
+    engine_id: String,
+    ok: bool,
+    stdout: String,
+    stderr: String,
+}
+
+fn engines_dir(vault_path: &str) -> PathBuf {
+    PathBuf::from(vault_path).join("_engines")
+}
+
+#[tauri::command]
+async fn scan_engines(state: State<'_, AppState>) -> Result<Vec<EngineEntry>, String> {
+    let vault = state.vault_path.lock().await;
+    let vault_path = vault.as_ref().ok_or("No vault selected")?;
+
+    let eng_dir = engines_dir(vault_path);
+    if !eng_dir.exists() {
+        fs::create_dir_all(&eng_dir).map_err(|e| e.to_string())?;
+        return Ok(vec![]);
+    }
+
+    let mut engines = Vec::new();
+    for entry in fs::read_dir(&eng_dir).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let name = entry.file_name().to_string_lossy().to_string();
+
+        // Each engine is either a .yaml file or a directory with config.yaml
+        if name.ends_with(".yaml") || name.ends_with(".yml") {
+            let config_path = entry.path();
+            let raw_yaml = fs::read_to_string(&config_path).unwrap_or_default();
+            let id = name.trim_end_matches(".yaml").trim_end_matches(".yml").to_string();
+
+            // Check for matching .py script
+            let script_name = format!("{}.py", id);
+            let script_path = eng_dir.join(&script_name);
+
+            engines.push(EngineEntry {
+                id,
+                config_path: config_path.to_string_lossy().to_string(),
+                script_path: if script_path.exists() {
+                    Some(script_path.to_string_lossy().to_string())
+                } else {
+                    None
+                },
+                raw_yaml,
+            });
+        } else if entry.path().is_dir() {
+            let config_path = entry.path().join("config.yaml");
+            let config_path_alt = entry.path().join("config.yml");
+            let actual_config = if config_path.exists() {
+                Some(config_path)
+            } else if config_path_alt.exists() {
+                Some(config_path_alt)
+            } else {
+                None
+            };
+
+            if let Some(cfg) = actual_config {
+                let raw_yaml = fs::read_to_string(&cfg).unwrap_or_default();
+                let script_path = entry.path().join("run.py");
+
+                engines.push(EngineEntry {
+                    id: name.clone(),
+                    config_path: cfg.to_string_lossy().to_string(),
+                    script_path: if script_path.exists() {
+                        Some(script_path.to_string_lossy().to_string())
+                    } else {
+                        None
+                    },
+                    raw_yaml,
+                });
+            }
+        }
+    }
+
+    engines.sort_by(|a, b| a.id.cmp(&b.id));
+    Ok(engines)
+}
+
+#[tauri::command]
+async fn read_engine_config(engine_id: String, state: State<'_, AppState>) -> Result<String, String> {
+    let vault = state.vault_path.lock().await;
+    let vault_path = vault.as_ref().ok_or("No vault selected")?;
+
+    let eng_dir = engines_dir(vault_path);
+
+    // Try file-based engine first
+    for ext in &["yaml", "yml"] {
+        let path = eng_dir.join(format!("{}.{}", engine_id, ext));
+        if path.exists() {
+            return fs::read_to_string(&path).map_err(|e| e.to_string());
+        }
+    }
+
+    // Try directory-based engine
+    for name in &["config.yaml", "config.yml"] {
+        let path = eng_dir.join(&engine_id).join(name);
+        if path.exists() {
+            return fs::read_to_string(&path).map_err(|e| e.to_string());
+        }
+    }
+
+    Err(format!("Engine config not found: {}", engine_id))
+}
+
+#[tauri::command]
+async fn write_engine_config(
+    engine_id: String,
+    content: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let vault = state.vault_path.lock().await;
+    let vault_path = vault.as_ref().ok_or("No vault selected")?;
+
+    let eng_dir = engines_dir(vault_path);
+    fs::create_dir_all(&eng_dir).map_err(|e| e.to_string())?;
+
+    // Try to find existing config file
+    for ext in &["yaml", "yml"] {
+        let path = eng_dir.join(format!("{}.{}", engine_id, ext));
+        if path.exists() {
+            return fs::write(&path, &content).map_err(|e| e.to_string());
+        }
+    }
+    for name in &["config.yaml", "config.yml"] {
+        let path = eng_dir.join(&engine_id).join(name);
+        if path.exists() {
+            return fs::write(&path, &content).map_err(|e| e.to_string());
+        }
+    }
+
+    // Create new file-based engine
+    let path = eng_dir.join(format!("{}.yaml", engine_id));
+    fs::write(&path, &content).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn run_engine(
+    engine_id: String,
+    state: State<'_, AppState>,
+) -> Result<EngineRunResult, String> {
+    let vault = state.vault_path.lock().await;
+    let vault_path = vault.as_ref().ok_or("No vault selected")?;
+
+    let eng_dir = engines_dir(vault_path);
+
+    // Find the script
+    let mut script_path: Option<PathBuf> = None;
+    let py_file = eng_dir.join(format!("{}.py", engine_id));
+    if py_file.exists() {
+        script_path = Some(py_file);
+    } else {
+        let dir_script = eng_dir.join(&engine_id).join("run.py");
+        if dir_script.exists() {
+            script_path = Some(dir_script);
+        }
+    }
+
+    let script = script_path.ok_or(format!("No script found for engine: {}", engine_id))?;
+
+    // Find the config
+    let config_content = {
+        let mut cfg = String::new();
+        for ext in &["yaml", "yml"] {
+            let path = eng_dir.join(format!("{}.{}", engine_id, ext));
+            if path.exists() {
+                cfg = fs::read_to_string(&path).unwrap_or_default();
+                break;
+            }
+        }
+        if cfg.is_empty() {
+            for name in &["config.yaml", "config.yml"] {
+                let path = eng_dir.join(&engine_id).join(name);
+                if path.exists() {
+                    cfg = fs::read_to_string(&path).unwrap_or_default();
+                    break;
+                }
+            }
+        }
+        cfg
+    };
+
+    // Build JSON payload for the script
+    let payload = serde_json::json!({
+        "engine_id": engine_id,
+        "vault_path": vault_path,
+        "config": config_content,
+        "mirror_path": PathBuf::from(vault_path).join("_data").to_string_lossy().to_string(),
+    });
+
+    // Try python, then py
+    let result = run_engine_script("python", &script, &payload.to_string())
+        .or_else(|_| run_engine_script("py", &script, &payload.to_string()));
+
+    match result {
+        Ok((stdout, stderr)) => Ok(EngineRunResult {
+            engine_id,
+            ok: true,
+            stdout,
+            stderr,
+        }),
+        Err(e) => Ok(EngineRunResult {
+            engine_id,
+            ok: false,
+            stdout: String::new(),
+            stderr: e,
+        }),
+    }
+}
+
+fn run_engine_script(program: &str, script: &PathBuf, payload: &str) -> Result<(String, String), String> {
+    let mut child = Command::new(program)
+        .arg(script)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| e.to_string())?;
+
+    if let Some(stdin) = child.stdin.as_mut() {
+        stdin.write_all(payload.as_bytes()).map_err(|e| e.to_string())?;
+    }
+
+    let output = child.wait_with_output().map_err(|e| e.to_string())?;
+    let stdout = String::from_utf8(output.stdout).unwrap_or_default();
+    let stderr = String::from_utf8(output.stderr).unwrap_or_default();
+
+    if output.status.success() {
+        Ok((stdout, stderr))
+    } else {
+        Err(stderr)
+    }
+}
+
 // ─── App Entry ───────────────────────────────────────────────────
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -675,6 +922,10 @@ pub fn run() {
             get_mirror_files,
             write_mirror_file,
             read_mirror_file,
+            scan_engines,
+            read_engine_config,
+            write_engine_config,
+            run_engine,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

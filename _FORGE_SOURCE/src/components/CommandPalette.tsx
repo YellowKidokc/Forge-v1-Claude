@@ -170,6 +170,7 @@ const CommandPalette = ({
                 { cmd: '/python', desc: 'Run Python sidecar command' },
                 { cmd: '/mirror', desc: 'Open data mirror browser' },
                 { cmd: '/versions', desc: 'Open version history' },
+                { cmd: '/engines', desc: 'Open engine manager' },
               ].map((item) => (
                 <Command.Item
                   key={item.cmd}
