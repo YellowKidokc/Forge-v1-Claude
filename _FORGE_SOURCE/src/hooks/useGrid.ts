@@ -18,6 +18,7 @@ import {
   getCellRange as _getCellRange,
   queryByTag as _queryByTag, queryByFlag as _queryByFlag,
   queryByText as _queryByText,
+  query as _query,
   setCellMeta, setRowMeta, addTagToCell, addFlagToRow, removeFlagFromRow,
   serializeGridMeta, deserializeGridMeta,
   CellMeta,
@@ -101,6 +102,39 @@ export function useGrid(editor: Editor | null) {
     return _queryByText(grid, search);
   }, [grid]);
 
+  // ── Semantic Query ──
+  const query = useCallback((queryStr: string): GridQueryResult => {
+    return _query(grid, queryStr);
+  }, [grid]);
+
+  // ── Write-back: setCell replaces a word in the editor ──
+  const setCell = useCallback((row: number, col: number, value: string) => {
+    if (!editor) return;
+    const cell = _getCell(grid, row, col);
+    if (!cell) return;
+    // Replace the word in the ProseMirror document
+    editor.chain()
+      .focus()
+      .insertContentAt({ from: cell.from, to: cell.to }, value)
+      .run();
+    // Grid will rebuild on editor update
+  }, [editor, grid]);
+
+  // ── Subscribe: watch for changes at a specific cell ──
+  const subscribe = useCallback((row: number, col: number, callback: (cell: GridCell | null) => void) => {
+    // Returns an unsubscribe function
+    // We check on every grid update
+    let prevWord = _getCell(grid, row, col)?.word;
+    const interval = window.setInterval(() => {
+      const cell = _getCell(grid, row, col);
+      if (cell?.word !== prevWord) {
+        prevWord = cell?.word;
+        callback(cell);
+      }
+    }, 500);
+    return () => window.clearInterval(interval);
+  }, [grid]);
+
   // ── Mutation API ──
   const addTag = useCallback((row: number, col: number, tag: string) => {
     setGrid(prev => addTagToCell(prev, row, col, tag));
@@ -170,6 +204,9 @@ export function useGrid(editor: Editor | null) {
     getCell,
     getRow,
     getCellRange,
+    setCell,
+    query,
+    subscribe,
     queryByTag,
     queryByFlag,
     queryByText,

@@ -10,6 +10,11 @@ import SettingsPage from './components/SettingsPage';
 import LogicSheet from './components/miniapps/LogicSheet';
 import TruthLayerWorkbench from './components/miniapps/TruthLayerWorkbench';
 import CommandPalette from './components/CommandPalette';
+import VersionBrowser from './components/VersionControl/VersionBrowser';
+import MirrorView from './components/DataMirror/MirrorView';
+import EngineManager from './components/GlobalEngine/EngineManager';
+import IngestionView from './components/DataIngestion/IngestionView';
+import PluginManagerView from './components/PluginManager/PluginManagerView';
 import { FileEntry, NoteMetadata, SavedNotebook, ForgeSettings, MiniApp } from './lib/types';
 // TopCommandBar replaced by BottomBar — do not re-import
 import { DEFAULT_SETTINGS, parseSettings, SETTINGS_STORAGE_KEY } from './lib/settings';
@@ -72,6 +77,11 @@ function App() {
   const [refreshToken, setRefreshToken] = useState(0);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+  const [versionBrowserOpen, setVersionBrowserOpen] = useState(false);
+  const [mirrorViewOpen, setMirrorViewOpen] = useState(false);
+  const [engineManagerOpen, setEngineManagerOpen] = useState(false);
+  const [ingestionViewOpen, setIngestionViewOpen] = useState(false);
+  const [pluginManagerOpen, setPluginManagerOpen] = useState(false);
   const [settings, setSettings] = useState<ForgeSettings>(DEFAULT_SETTINGS);
   const [centerView, setCenterView] = useState<CenterView>('editor');
   const [filesSnapshot, setFilesSnapshot] = useState<FileEntry[]>([]);
@@ -429,6 +439,31 @@ function App() {
         return true;
       }
 
+      if (command === 'mirror' || command === 'data') {
+        setMirrorViewOpen(true);
+        return true;
+      }
+
+      if (command === 'versions' || command === 'history') {
+        setVersionBrowserOpen(true);
+        return true;
+      }
+
+      if (command === 'engines' || command === 'engine') {
+        setEngineManagerOpen(true);
+        return true;
+      }
+
+      if (command === 'ingest' || command === 'import') {
+        setIngestionViewOpen(true);
+        return true;
+      }
+
+      if (command === 'plugins' || command === 'plugin') {
+        setPluginManagerOpen(true);
+        return true;
+      }
+
       if (command === 'ai') {
         if (!argument) {
           setAiPanelOpen(true);
@@ -524,6 +559,7 @@ function App() {
                 onSendPromptToAi={(text) => queuePrompt(text, 'interface')}
                 onRunPythonPlan={runPythonPlan}
                 autosaveDelayMs={settings.autosaveDelayMs}
+                onOpenVersions={() => setVersionBrowserOpen(true)}
               />
               <NodeSidePanel
                 filePath={activeFile}
@@ -588,6 +624,34 @@ function App() {
         onUpdateSettings={setSettings}
         onClose={() => setSettingsOpen(false)}
         onLaunchMiniApp={launchMiniApp}
+      />
+
+      <MirrorView
+        open={mirrorViewOpen}
+        onClose={() => setMirrorViewOpen(false)}
+      />
+
+      <EngineManager
+        open={engineManagerOpen}
+        onClose={() => setEngineManagerOpen(false)}
+      />
+
+      <IngestionView
+        open={ingestionViewOpen}
+        onClose={() => setIngestionViewOpen(false)}
+      />
+
+      <PluginManagerView
+        open={pluginManagerOpen}
+        onClose={() => setPluginManagerOpen(false)}
+      />
+
+      <VersionBrowser
+        open={versionBrowserOpen}
+        onClose={() => setVersionBrowserOpen(false)}
+        filePath={activeFile}
+        currentContent={activeNoteMarkdown}
+        onRollback={() => setRefreshToken((prev) => prev + 1)}
       />
 
       <CommandPalette

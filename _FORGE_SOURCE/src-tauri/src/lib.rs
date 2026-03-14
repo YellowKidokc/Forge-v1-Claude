@@ -110,6 +110,9 @@ fn is_ignored_folder(name: &str) -> bool {
         || name == "target"
         || name == "__pycache__"
         || name == ".obsidian"
+        || name == "_versions"
+        || name == "_data"
+        || name == "_engines"
 }
 
 fn sanitize_note_segment(segment: &str) -> String {
@@ -386,6 +389,501 @@ async fn run_python_sidecar(request: PythonSidecarRequest) -> Result<String, Str
         .or_else(|_| run_sidecar_with("py", &["-3"], &payload))
 }
 
+// ─── Version Control Commands ───────────────────────────────────
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+struct VersionSnapshot {
+    id: String,
+    file_path: String,
+    timestamp: u64,
+    size_bytes: u64,
+    summary: String,
+}
+
+fn versions_dir(vault_path: &str) -> PathBuf {
+    PathBuf::from(vault_path).join("_versions")
+}
+
+fn snapshot_dir_for_file(vault_path: &str, file_path: &str) -> PathBuf {
+    // Create a safe directory name from the relative file path
+    let vault = PathBuf::from(vault_path);
+    let file = PathBuf::from(file_path);
+    let relative = file.strip_prefix(&vault).unwrap_or(&file);
+    let safe_name = relative
+        .to_string_lossy()
+        .replace(['/', '\\', ':'], "_")
+        .replace(".md", "");
+    versions_dir(vault_path).join(safe_name)
+}
+
+#[tauri::command]
+async fn create_snapshot(
+    file_path: String,
+    content: String,
+    state: State<'_, AppState>,
+) -> Result<VersionSnapshot, String> {
+    let vault = state.vault_path.lock().await;
+    let vault_path = vault.as_ref().ok_or("No vault selected")?;
+
+    let snap_dir = snapshot_dir_for_file(vault_path, &file_path);
+    fs::create_dir_all(&snap_dir).map_err(|e| e.to_string())?;
+
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_millis() as u64;
+
+    let id = format!("{}", timestamp);
+    let snap_path = snap_dir.join(format!("{}.md", id));
+
+    fs::write(&snap_path, &content).map_err(|e| e.to_string())?;
+
+    // Generate summary: first line or first 80 chars
+    let summary = content
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("(empty)")
+        .chars()
+        .take(80)
+        .collect::<String>();
+
+    Ok(VersionSnapshot {
+        id,
+        file_path,
+        timestamp,
+        size_bytes: content.len() as u64,
+        summary,
+    })
+}
+
+#[tauri::command]
+async fn list_snapshots(
+    file_path: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<VersionSnapshot>, String> {
+    let vault = state.vault_path.lock().await;
+    let vault_path = vault.as_ref().ok_or("No vault selected")?;
+
+    let snap_dir = snapshot_dir_for_file(vault_path, &file_path);
+    if !snap_dir.exists() {
+        return Ok(vec![]);
+    }
+
+    let mut snapshots: Vec<VersionSnapshot> = Vec::new();
+
+    for entry in fs::read_dir(&snap_dir).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let name = entry.file_name().to_string_lossy().to_string();
+        if !name.ends_with(".md") {
+            continue;
+        }
+
+        let id = name.trim_end_matches(".md").to_string();
+        let timestamp: u64 = id.parse().unwrap_or(0);
+        let metadata = entry.metadata().map_err(|e| e.to_string())?;
+        let size_bytes = metadata.len();
+
+        // Read first line for summary
+        let content = fs::read_to_string(entry.path()).unwrap_or_default();
+        let summary = content
+            .lines()
+            .find(|l| !l.trim().is_empty())
+            .unwrap_or("(empty)")
+            .chars()
+            .take(80)
+            .collect::<String>();
+
+        snapshots.push(VersionSnapshot {
+            id,
+            file_path: file_path.clone(),
+            timestamp,
+            size_bytes,
+            summary,
+        });
+    }
+
+    snapshots.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    Ok(snapshots)
+}
+
+#[tauri::command]
+async fn read_snapshot(
+    file_path: String,
+    snapshot_id: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let vault = state.vault_path.lock().await;
+    let vault_path = vault.as_ref().ok_or("No vault selected")?;
+
+    let snap_dir = snapshot_dir_for_file(vault_path, &file_path);
+    let snap_path = snap_dir.join(format!("{}.md", snapshot_id));
+
+    fs::read_to_string(&snap_path)
+        .map_err(|e| format!("Failed to read snapshot: {}", e))
+}
+
+#[tauri::command]
+async fn rollback_to_snapshot(
+    file_path: String,
+    snapshot_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let vault = state.vault_path.lock().await;
+    let vault_path = vault.as_ref().ok_or("No vault selected")?;
+
+    let snap_dir = snapshot_dir_for_file(vault_path, &file_path);
+    let snap_path = snap_dir.join(format!("{}.md", snapshot_id));
+
+    let content = fs::read_to_string(&snap_path)
+        .map_err(|e| format!("Failed to read snapshot: {}", e))?;
+
+    // Create a snapshot of current state before rollback
+    let current_content = fs::read_to_string(&file_path).unwrap_or_default();
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_millis() as u64;
+    let pre_rollback_path = snap_dir.join(format!("{}.md", timestamp));
+    let _ = fs::write(&pre_rollback_path, &current_content);
+
+    // Write the snapshot content to the file
+    fs::write(&file_path, &content)
+        .map_err(|e| format!("Failed to rollback: {}", e))
+}
+
+// ─── Data Mirror Commands ───────────────────────────────────────
+
+#[tauri::command]
+async fn ensure_mirror(state: State<'_, AppState>) -> Result<String, String> {
+    let vault = state.vault_path.lock().await;
+    let vault_path = vault.as_ref().ok_or("No vault selected")?;
+    let mirror_path = PathBuf::from(vault_path).join("_data");
+    fs::create_dir_all(&mirror_path).map_err(|e| e.to_string())?;
+    Ok(mirror_path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+async fn get_mirror_files(state: State<'_, AppState>) -> Result<Vec<FileEntry>, String> {
+    let vault = state.vault_path.lock().await;
+    let vault_path = vault.as_ref().ok_or("No vault selected")?;
+    let mirror_path = PathBuf::from(vault_path).join("_data");
+    if !mirror_path.exists() {
+        return Ok(vec![]);
+    }
+    scan_mirror_directory(&mirror_path, 0, 5).map_err(|e| e.to_string())
+}
+
+fn scan_mirror_directory(path: &PathBuf, depth: usize, max_depth: usize) -> Result<Vec<FileEntry>, std::io::Error> {
+    if depth >= max_depth {
+        return Ok(vec![]);
+    }
+    let mut entries = Vec::new();
+    for entry in fs::read_dir(path)? {
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with('.') {
+            continue;
+        }
+        let file_path = entry.path();
+        let is_dir = file_path.is_dir();
+        if is_dir {
+            let children = scan_mirror_directory(&file_path, depth + 1, max_depth)?;
+            entries.push(FileEntry {
+                name,
+                path: file_path.to_string_lossy().to_string(),
+                is_dir: true,
+                children: if children.is_empty() { None } else { Some(children) },
+            });
+        } else {
+            entries.push(FileEntry {
+                name,
+                path: file_path.to_string_lossy().to_string(),
+                is_dir: false,
+                children: None,
+            });
+        }
+    }
+    entries.sort_by(|a, b| match (a.is_dir, b.is_dir) {
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+    });
+    Ok(entries)
+}
+
+#[tauri::command]
+async fn write_mirror_file(
+    relative_path: String,
+    content: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let vault = state.vault_path.lock().await;
+    let vault_path = vault.as_ref().ok_or("No vault selected")?;
+    let mirror_path = PathBuf::from(vault_path).join("_data").join(&relative_path);
+    if let Some(parent) = mirror_path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    fs::write(&mirror_path, &content).map_err(|e| e.to_string())?;
+    Ok(mirror_path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+async fn read_mirror_file(
+    relative_path: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let vault = state.vault_path.lock().await;
+    let vault_path = vault.as_ref().ok_or("No vault selected")?;
+    let mirror_path = PathBuf::from(vault_path).join("_data").join(&relative_path);
+    fs::read_to_string(&mirror_path).map_err(|e| format!("Failed to read mirror file: {}", e))
+}
+
+// ─── Engine Commands ────────────────────────────────────────────
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+struct EngineEntry {
+    id: String,
+    config_path: String,
+    script_path: Option<String>,
+    raw_yaml: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+struct EngineRunResult {
+    engine_id: String,
+    ok: bool,
+    stdout: String,
+    stderr: String,
+}
+
+fn engines_dir(vault_path: &str) -> PathBuf {
+    PathBuf::from(vault_path).join("_engines")
+}
+
+#[tauri::command]
+async fn scan_engines(state: State<'_, AppState>) -> Result<Vec<EngineEntry>, String> {
+    let vault = state.vault_path.lock().await;
+    let vault_path = vault.as_ref().ok_or("No vault selected")?;
+
+    let eng_dir = engines_dir(vault_path);
+    if !eng_dir.exists() {
+        fs::create_dir_all(&eng_dir).map_err(|e| e.to_string())?;
+        return Ok(vec![]);
+    }
+
+    let mut engines = Vec::new();
+    for entry in fs::read_dir(&eng_dir).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let name = entry.file_name().to_string_lossy().to_string();
+
+        // Each engine is either a .yaml file or a directory with config.yaml
+        if name.ends_with(".yaml") || name.ends_with(".yml") {
+            let config_path = entry.path();
+            let raw_yaml = fs::read_to_string(&config_path).unwrap_or_default();
+            let id = name.trim_end_matches(".yaml").trim_end_matches(".yml").to_string();
+
+            // Check for matching .py script
+            let script_name = format!("{}.py", id);
+            let script_path = eng_dir.join(&script_name);
+
+            engines.push(EngineEntry {
+                id,
+                config_path: config_path.to_string_lossy().to_string(),
+                script_path: if script_path.exists() {
+                    Some(script_path.to_string_lossy().to_string())
+                } else {
+                    None
+                },
+                raw_yaml,
+            });
+        } else if entry.path().is_dir() {
+            let config_path = entry.path().join("config.yaml");
+            let config_path_alt = entry.path().join("config.yml");
+            let actual_config = if config_path.exists() {
+                Some(config_path)
+            } else if config_path_alt.exists() {
+                Some(config_path_alt)
+            } else {
+                None
+            };
+
+            if let Some(cfg) = actual_config {
+                let raw_yaml = fs::read_to_string(&cfg).unwrap_or_default();
+                let script_path = entry.path().join("run.py");
+
+                engines.push(EngineEntry {
+                    id: name.clone(),
+                    config_path: cfg.to_string_lossy().to_string(),
+                    script_path: if script_path.exists() {
+                        Some(script_path.to_string_lossy().to_string())
+                    } else {
+                        None
+                    },
+                    raw_yaml,
+                });
+            }
+        }
+    }
+
+    engines.sort_by(|a, b| a.id.cmp(&b.id));
+    Ok(engines)
+}
+
+#[tauri::command]
+async fn read_engine_config(engine_id: String, state: State<'_, AppState>) -> Result<String, String> {
+    let vault = state.vault_path.lock().await;
+    let vault_path = vault.as_ref().ok_or("No vault selected")?;
+
+    let eng_dir = engines_dir(vault_path);
+
+    // Try file-based engine first
+    for ext in &["yaml", "yml"] {
+        let path = eng_dir.join(format!("{}.{}", engine_id, ext));
+        if path.exists() {
+            return fs::read_to_string(&path).map_err(|e| e.to_string());
+        }
+    }
+
+    // Try directory-based engine
+    for name in &["config.yaml", "config.yml"] {
+        let path = eng_dir.join(&engine_id).join(name);
+        if path.exists() {
+            return fs::read_to_string(&path).map_err(|e| e.to_string());
+        }
+    }
+
+    Err(format!("Engine config not found: {}", engine_id))
+}
+
+#[tauri::command]
+async fn write_engine_config(
+    engine_id: String,
+    content: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let vault = state.vault_path.lock().await;
+    let vault_path = vault.as_ref().ok_or("No vault selected")?;
+
+    let eng_dir = engines_dir(vault_path);
+    fs::create_dir_all(&eng_dir).map_err(|e| e.to_string())?;
+
+    // Try to find existing config file
+    for ext in &["yaml", "yml"] {
+        let path = eng_dir.join(format!("{}.{}", engine_id, ext));
+        if path.exists() {
+            return fs::write(&path, &content).map_err(|e| e.to_string());
+        }
+    }
+    for name in &["config.yaml", "config.yml"] {
+        let path = eng_dir.join(&engine_id).join(name);
+        if path.exists() {
+            return fs::write(&path, &content).map_err(|e| e.to_string());
+        }
+    }
+
+    // Create new file-based engine
+    let path = eng_dir.join(format!("{}.yaml", engine_id));
+    fs::write(&path, &content).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn run_engine(
+    engine_id: String,
+    state: State<'_, AppState>,
+) -> Result<EngineRunResult, String> {
+    let vault = state.vault_path.lock().await;
+    let vault_path = vault.as_ref().ok_or("No vault selected")?;
+
+    let eng_dir = engines_dir(vault_path);
+
+    // Find the script
+    let mut script_path: Option<PathBuf> = None;
+    let py_file = eng_dir.join(format!("{}.py", engine_id));
+    if py_file.exists() {
+        script_path = Some(py_file);
+    } else {
+        let dir_script = eng_dir.join(&engine_id).join("run.py");
+        if dir_script.exists() {
+            script_path = Some(dir_script);
+        }
+    }
+
+    let script = script_path.ok_or(format!("No script found for engine: {}", engine_id))?;
+
+    // Find the config
+    let config_content = {
+        let mut cfg = String::new();
+        for ext in &["yaml", "yml"] {
+            let path = eng_dir.join(format!("{}.{}", engine_id, ext));
+            if path.exists() {
+                cfg = fs::read_to_string(&path).unwrap_or_default();
+                break;
+            }
+        }
+        if cfg.is_empty() {
+            for name in &["config.yaml", "config.yml"] {
+                let path = eng_dir.join(&engine_id).join(name);
+                if path.exists() {
+                    cfg = fs::read_to_string(&path).unwrap_or_default();
+                    break;
+                }
+            }
+        }
+        cfg
+    };
+
+    // Build JSON payload for the script
+    let payload = serde_json::json!({
+        "engine_id": engine_id,
+        "vault_path": vault_path,
+        "config": config_content,
+        "mirror_path": PathBuf::from(vault_path).join("_data").to_string_lossy().to_string(),
+    });
+
+    // Try python, then py
+    let result = run_engine_script("python", &script, &payload.to_string())
+        .or_else(|_| run_engine_script("py", &script, &payload.to_string()));
+
+    match result {
+        Ok((stdout, stderr)) => Ok(EngineRunResult {
+            engine_id,
+            ok: true,
+            stdout,
+            stderr,
+        }),
+        Err(e) => Ok(EngineRunResult {
+            engine_id,
+            ok: false,
+            stdout: String::new(),
+            stderr: e,
+        }),
+    }
+}
+
+fn run_engine_script(program: &str, script: &PathBuf, payload: &str) -> Result<(String, String), String> {
+    let mut child = Command::new(program)
+        .arg(script)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| e.to_string())?;
+
+    if let Some(stdin) = child.stdin.as_mut() {
+        stdin.write_all(payload.as_bytes()).map_err(|e| e.to_string())?;
+    }
+
+    let output = child.wait_with_output().map_err(|e| e.to_string())?;
+    let stdout = String::from_utf8(output.stdout).unwrap_or_default();
+    let stderr = String::from_utf8(output.stderr).unwrap_or_default();
+
+    if output.status.success() {
+        Ok((stdout, stderr))
+    } else {
+        Err(stderr)
+    }
+}
+
 // ─── App Entry ───────────────────────────────────────────────────
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -416,6 +914,18 @@ pub fn run() {
             rename_item,
             delete_item,
             run_python_sidecar,
+            create_snapshot,
+            list_snapshots,
+            read_snapshot,
+            rollback_to_snapshot,
+            ensure_mirror,
+            get_mirror_files,
+            write_mirror_file,
+            read_mirror_file,
+            scan_engines,
+            read_engine_config,
+            write_engine_config,
+            run_engine,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
