@@ -14,9 +14,10 @@ import { PromotedBlock } from './PromotedBlockExtension';
 import EditorToolbar from './EditorToolbar';
 import { markdownToHtml, tiptapJsonToMarkdown } from '../../lib/markdown';
 import { invoke } from '@tauri-apps/api/core';
-import { Save } from 'lucide-react';
+import { Save, Clock } from 'lucide-react';
 import { NoteMetadata } from '../../lib/types';
 import { extractNoteMetadata } from '../../lib/noteMeta';
+import { createSnapshot } from '../../lib/versioning';
 import { useGrid } from '../../hooks/useGrid';
 import InlineAiChat from './InlineAiChat';
 
@@ -35,6 +36,7 @@ interface ForgeEditorProps {
   onSendPromptToAi?: (prompt: string) => void;
   onRunPythonPlan?: (prompt: string, selection?: string) => Promise<boolean>;
   autosaveDelayMs?: number;
+  onOpenVersions?: () => void;
 }
 
 function escapeRegExp(value: string): string {
@@ -50,6 +52,7 @@ const ForgeEditor = ({
   onSendPromptToAi,
   onRunPythonPlan,
   autosaveDelayMs = 2000,
+  onOpenVersions,
 }: ForgeEditorProps) => {
   const saveTimeoutRef = useRef<number | null>(null);
   const lastSavedRef = useRef<string>('');
@@ -162,6 +165,10 @@ const ForgeEditor = ({
         await invoke('write_note', { path: filePath, content: markdown });
         lastSavedRef.current = markdown;
         onContentChange?.(false);
+        // Create version snapshot on save
+        createSnapshot(filePath, markdown).catch((err) =>
+          console.error('Failed to create snapshot:', err)
+        );
       } catch (err) {
         console.error('Failed to save:', err);
       }
@@ -307,6 +314,15 @@ const ForgeEditor = ({
           >
             <Save size={14} />
           </button>
+          {onOpenVersions && (
+            <button
+              onClick={onOpenVersions}
+              className="text-gray-500 hover:text-forge-ember transition-colors p-1 cursor-pointer"
+              title="Version History"
+            >
+              <Clock size={14} />
+            </button>
+          )}
           <button
             onClick={openWikiLinkFromPrompt}
             className="text-gray-500 hover:text-forge-ember transition-colors p-1 cursor-pointer text-[10px] font-mono"

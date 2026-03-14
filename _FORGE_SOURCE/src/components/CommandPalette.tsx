@@ -168,6 +168,8 @@ const CommandPalette = ({
                 { cmd: '/editor', desc: 'Switch to Editor view' },
                 { cmd: '/settings', desc: 'Open settings' },
                 { cmd: '/python', desc: 'Run Python sidecar command' },
+                { cmd: '/mirror', desc: 'Open data mirror browser' },
+                { cmd: '/versions', desc: 'Open version history' },
               ].map((item) => (
                 <Command.Item
                   key={item.cmd}

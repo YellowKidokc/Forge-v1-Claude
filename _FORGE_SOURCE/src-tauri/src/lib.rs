@@ -110,6 +110,8 @@ fn is_ignored_folder(name: &str) -> bool {
         || name == "target"
         || name == "__pycache__"
         || name == ".obsidian"
+        || name == "_versions"
+        || name == "_data"
 }
 
 fn sanitize_note_segment(segment: &str) -> String {
@@ -386,6 +388,255 @@ async fn run_python_sidecar(request: PythonSidecarRequest) -> Result<String, Str
         .or_else(|_| run_sidecar_with("py", &["-3"], &payload))
 }
 
+// ─── Version Control Commands ───────────────────────────────────
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+struct VersionSnapshot {
+    id: String,
+    file_path: String,
+    timestamp: u64,
+    size_bytes: u64,
+    summary: String,
+}
+
+fn versions_dir(vault_path: &str) -> PathBuf {
+    PathBuf::from(vault_path).join("_versions")
+}
+
+fn snapshot_dir_for_file(vault_path: &str, file_path: &str) -> PathBuf {
+    // Create a safe directory name from the relative file path
+    let vault = PathBuf::from(vault_path);
+    let file = PathBuf::from(file_path);
+    let relative = file.strip_prefix(&vault).unwrap_or(&file);
+    let safe_name = relative
+        .to_string_lossy()
+        .replace(['/', '\\', ':'], "_")
+        .replace(".md", "");
+    versions_dir(vault_path).join(safe_name)
+}
+
+#[tauri::command]
+async fn create_snapshot(
+    file_path: String,
+    content: String,
+    state: State<'_, AppState>,
+) -> Result<VersionSnapshot, String> {
+    let vault = state.vault_path.lock().await;
+    let vault_path = vault.as_ref().ok_or("No vault selected")?;
+
+    let snap_dir = snapshot_dir_for_file(vault_path, &file_path);
+    fs::create_dir_all(&snap_dir).map_err(|e| e.to_string())?;
+
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_millis() as u64;
+
+    let id = format!("{}", timestamp);
+    let snap_path = snap_dir.join(format!("{}.md", id));
+
+    fs::write(&snap_path, &content).map_err(|e| e.to_string())?;
+
+    // Generate summary: first line or first 80 chars
+    let summary = content
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("(empty)")
+        .chars()
+        .take(80)
+        .collect::<String>();
+
+    Ok(VersionSnapshot {
+        id,
+        file_path,
+        timestamp,
+        size_bytes: content.len() as u64,
+        summary,
+    })
+}
+
+#[tauri::command]
+async fn list_snapshots(
+    file_path: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<VersionSnapshot>, String> {
+    let vault = state.vault_path.lock().await;
+    let vault_path = vault.as_ref().ok_or("No vault selected")?;
+
+    let snap_dir = snapshot_dir_for_file(vault_path, &file_path);
+    if !snap_dir.exists() {
+        return Ok(vec![]);
+    }
+
+    let mut snapshots: Vec<VersionSnapshot> = Vec::new();
+
+    for entry in fs::read_dir(&snap_dir).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let name = entry.file_name().to_string_lossy().to_string();
+        if !name.ends_with(".md") {
+            continue;
+        }
+
+        let id = name.trim_end_matches(".md").to_string();
+        let timestamp: u64 = id.parse().unwrap_or(0);
+        let metadata = entry.metadata().map_err(|e| e.to_string())?;
+        let size_bytes = metadata.len();
+
+        // Read first line for summary
+        let content = fs::read_to_string(entry.path()).unwrap_or_default();
+        let summary = content
+            .lines()
+            .find(|l| !l.trim().is_empty())
+            .unwrap_or("(empty)")
+            .chars()
+            .take(80)
+            .collect::<String>();
+
+        snapshots.push(VersionSnapshot {
+            id,
+            file_path: file_path.clone(),
+            timestamp,
+            size_bytes,
+            summary,
+        });
+    }
+
+    snapshots.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    Ok(snapshots)
+}
+
+#[tauri::command]
+async fn read_snapshot(
+    file_path: String,
+    snapshot_id: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let vault = state.vault_path.lock().await;
+    let vault_path = vault.as_ref().ok_or("No vault selected")?;
+
+    let snap_dir = snapshot_dir_for_file(vault_path, &file_path);
+    let snap_path = snap_dir.join(format!("{}.md", snapshot_id));
+
+    fs::read_to_string(&snap_path)
+        .map_err(|e| format!("Failed to read snapshot: {}", e))
+}
+
+#[tauri::command]
+async fn rollback_to_snapshot(
+    file_path: String,
+    snapshot_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let vault = state.vault_path.lock().await;
+    let vault_path = vault.as_ref().ok_or("No vault selected")?;
+
+    let snap_dir = snapshot_dir_for_file(vault_path, &file_path);
+    let snap_path = snap_dir.join(format!("{}.md", snapshot_id));
+
+    let content = fs::read_to_string(&snap_path)
+        .map_err(|e| format!("Failed to read snapshot: {}", e))?;
+
+    // Create a snapshot of current state before rollback
+    let current_content = fs::read_to_string(&file_path).unwrap_or_default();
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_millis() as u64;
+    let pre_rollback_path = snap_dir.join(format!("{}.md", timestamp));
+    let _ = fs::write(&pre_rollback_path, &current_content);
+
+    // Write the snapshot content to the file
+    fs::write(&file_path, &content)
+        .map_err(|e| format!("Failed to rollback: {}", e))
+}
+
+// ─── Data Mirror Commands ───────────────────────────────────────
+
+#[tauri::command]
+async fn ensure_mirror(state: State<'_, AppState>) -> Result<String, String> {
+    let vault = state.vault_path.lock().await;
+    let vault_path = vault.as_ref().ok_or("No vault selected")?;
+    let mirror_path = PathBuf::from(vault_path).join("_data");
+    fs::create_dir_all(&mirror_path).map_err(|e| e.to_string())?;
+    Ok(mirror_path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+async fn get_mirror_files(state: State<'_, AppState>) -> Result<Vec<FileEntry>, String> {
+    let vault = state.vault_path.lock().await;
+    let vault_path = vault.as_ref().ok_or("No vault selected")?;
+    let mirror_path = PathBuf::from(vault_path).join("_data");
+    if !mirror_path.exists() {
+        return Ok(vec![]);
+    }
+    scan_mirror_directory(&mirror_path, 0, 5).map_err(|e| e.to_string())
+}
+
+fn scan_mirror_directory(path: &PathBuf, depth: usize, max_depth: usize) -> Result<Vec<FileEntry>, std::io::Error> {
+    if depth >= max_depth {
+        return Ok(vec![]);
+    }
+    let mut entries = Vec::new();
+    for entry in fs::read_dir(path)? {
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with('.') {
+            continue;
+        }
+        let file_path = entry.path();
+        let is_dir = file_path.is_dir();
+        if is_dir {
+            let children = scan_mirror_directory(&file_path, depth + 1, max_depth)?;
+            entries.push(FileEntry {
+                name,
+                path: file_path.to_string_lossy().to_string(),
+                is_dir: true,
+                children: if children.is_empty() { None } else { Some(children) },
+            });
+        } else {
+            entries.push(FileEntry {
+                name,
+                path: file_path.to_string_lossy().to_string(),
+                is_dir: false,
+                children: None,
+            });
+        }
+    }
+    entries.sort_by(|a, b| match (a.is_dir, b.is_dir) {
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+    });
+    Ok(entries)
+}
+
+#[tauri::command]
+async fn write_mirror_file(
+    relative_path: String,
+    content: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let vault = state.vault_path.lock().await;
+    let vault_path = vault.as_ref().ok_or("No vault selected")?;
+    let mirror_path = PathBuf::from(vault_path).join("_data").join(&relative_path);
+    if let Some(parent) = mirror_path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    fs::write(&mirror_path, &content).map_err(|e| e.to_string())?;
+    Ok(mirror_path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+async fn read_mirror_file(
+    relative_path: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let vault = state.vault_path.lock().await;
+    let vault_path = vault.as_ref().ok_or("No vault selected")?;
+    let mirror_path = PathBuf::from(vault_path).join("_data").join(&relative_path);
+    fs::read_to_string(&mirror_path).map_err(|e| format!("Failed to read mirror file: {}", e))
+}
+
 // ─── App Entry ───────────────────────────────────────────────────
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -416,6 +667,14 @@ pub fn run() {
             rename_item,
             delete_item,
             run_python_sidecar,
+            create_snapshot,
+            list_snapshots,
+            read_snapshot,
+            rollback_to_snapshot,
+            ensure_mirror,
+            get_mirror_files,
+            write_mirror_file,
+            read_mirror_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
