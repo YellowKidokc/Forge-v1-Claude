@@ -171,6 +171,7 @@ const CommandPalette = ({
                 { cmd: '/mirror', desc: 'Open data mirror browser' },
                 { cmd: '/versions', desc: 'Open version history' },
                 { cmd: '/engines', desc: 'Open engine manager' },
+                { cmd: '/ingest', desc: 'Import data (CSV, JSON, text)' },
               ].map((item) => (
                 <Command.Item
                   key={item.cmd}
