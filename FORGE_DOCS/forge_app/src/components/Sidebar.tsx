@@ -51,7 +51,7 @@ const Sidebar: React.FC<SidebarProps> = ({
   const [searchQuery, setSearchQuery] = useState('');
   const [vaultInput, setVaultInput] = useState('');
   const [showVaultPicker, setShowVaultPicker] = useState(false);
-  const [apiKeySet] = useState(hasApiKey());
+  const [apiKeySet, setApiKeySet] = useState(hasApiKey());
 
   const setVaultHandler = async (path: string) => {
     if (!path.trim()) {
@@ -117,8 +117,15 @@ const Sidebar: React.FC<SidebarProps> = ({
     }
   };
 
+  // Re-check API key status when window regains focus (e.g. after Settings change)
   useEffect(() => {
-    connectDb();
+    const handler = () => setApiKeySet(hasApiKey());
+    window.addEventListener('focus', handler);
+    return () => window.removeEventListener('focus', handler);
+  }, []);
+
+  useEffect(() => {
+    void connectDb();
   }, []);
 
   useEffect(() => {
@@ -165,7 +172,7 @@ const Sidebar: React.FC<SidebarProps> = ({
               className="w-full bg-black/40 border border-forge-steel p-1.5 rounded text-xs outline-none focus:border-forge-ember transition-colors font-mono text-white"
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && vaultInput.trim()) {
-                  setVaultHandler(vaultInput.trim());
+                  void setVaultHandler(vaultInput.trim());
                 }
                 if (e.key === 'Escape') {
                   setShowVaultPicker(false);
@@ -175,7 +182,7 @@ const Sidebar: React.FC<SidebarProps> = ({
             />
             <div className="flex gap-1">
               <button
-                onClick={() => vaultInput.trim() && setVaultHandler(vaultInput.trim())}
+                onClick={() => vaultInput.trim() && void setVaultHandler(vaultInput.trim())}
                 className="flex-1 text-[10px] py-1 bg-forge-ember/20 text-forge-ember rounded hover:bg-forge-ember/30 transition-colors cursor-pointer"
               >
                 Save & Open

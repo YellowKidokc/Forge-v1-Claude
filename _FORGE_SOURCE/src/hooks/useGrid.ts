@@ -10,7 +10,7 @@
  *   grid.snapshot                 // the current GridSnapshot
  */
 
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { Editor } from '@tiptap/core';
 import {
   GridSnapshot, GridCell, GridRow, GridQueryResult,
@@ -121,19 +121,22 @@ export function useGrid(editor: Editor | null) {
   }, [editor, grid]);
 
   // ── Subscribe: watch for changes at a specific cell ──
+  const gridRef = useRef(grid);
+  gridRef.current = grid;
+
   const subscribe = useCallback((row: number, col: number, callback: (cell: GridCell | null) => void) => {
     // Returns an unsubscribe function
-    // We check on every grid update
-    let prevWord = _getCell(grid, row, col)?.word;
+    // Uses ref to always read the latest grid snapshot
+    let prevWord = _getCell(gridRef.current, row, col)?.word;
     const interval = window.setInterval(() => {
-      const cell = _getCell(grid, row, col);
+      const cell = _getCell(gridRef.current, row, col);
       if (cell?.word !== prevWord) {
         prevWord = cell?.word;
         callback(cell);
       }
     }, 500);
     return () => window.clearInterval(interval);
-  }, [grid]);
+  }, []);
 
   // ── Mutation API ──
   const addTag = useCallback((row: number, col: number, tag: string) => {

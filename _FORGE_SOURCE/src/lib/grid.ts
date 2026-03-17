@@ -120,24 +120,24 @@ export function buildGrid(doc: any): GridSnapshot {
   }
 
   // Walk top-level block nodes
-  doc.content.forEach((node: any, _nodeIndex: number, offset: number) => {
-    const row = buildRowFromNode(node, rowIndex, offset);
-    if (row) {
-      rows.push(row);
-      totalCells += row.cells.length;
-      rowIndex++;
-    }
-
-    // Handle nested content (lists, blockquotes)
+  doc.content.forEach((node: any, offset: number, _nodeIndex: number) => {
+    // For container nodes (lists, blockquotes), only process children — not the container itself
     if (node.content && hasNestedBlocks(node)) {
-      node.content.forEach((child: any, _ci: number, childOffset: number) => {
-        const childRow = buildRowFromNode(child, rowIndex, childOffset);
+      node.content.forEach((child: any, childOffset: number, _ci: number) => {
+        const childRow = buildRowFromNode(child, rowIndex, offset + 1 + childOffset);
         if (childRow) {
           rows.push(childRow);
           totalCells += childRow.cells.length;
           rowIndex++;
         }
       });
+    } else {
+      const row = buildRowFromNode(node, rowIndex, offset);
+      if (row) {
+        rows.push(row);
+        totalCells += row.cells.length;
+        rowIndex++;
+      }
     }
   });
 
