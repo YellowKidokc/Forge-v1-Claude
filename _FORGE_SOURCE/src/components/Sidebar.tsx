@@ -60,7 +60,7 @@ const Sidebar: React.FC<SidebarProps> = ({
   const [searchQuery, setSearchQuery] = useState('');
   const [vaultInput, setVaultInput] = useState('');
   const [showVaultPicker, setShowVaultPicker] = useState(false);
-  const [apiKeySet] = useState(hasApiKey());
+  const [apiKeySet, setApiKeySet] = useState(hasApiKey());
   const [sidebarMode, setSidebarMode] = useState<SidebarMode>('notes');
 
   const setVaultHandler = async (path: string) => {
@@ -126,6 +126,13 @@ const Sidebar: React.FC<SidebarProps> = ({
       console.error('Failed to create folder:', err);
     }
   };
+
+  // Re-check API key status when window regains focus (e.g. after Settings change)
+  useEffect(() => {
+    const handler = () => setApiKeySet(hasApiKey());
+    window.addEventListener('focus', handler);
+    return () => window.removeEventListener('focus', handler);
+  }, []);
 
   useEffect(() => {
     connectDb();

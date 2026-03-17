@@ -17,7 +17,8 @@ function escapeHtml(text: string): string {
 }
 
 function processInline(text: string): string {
-  return text
+  // First escape HTML entities in the raw text, then apply markdown formatting
+  return escapeHtml(text)
     .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
     .replace(/\*(.+?)\*/g, '<em>$1</em>')
     .replace(/`(.+?)`/g, '<code>$1</code>');
@@ -106,9 +107,24 @@ export function markdownToHtml(md: string): string {
       continue;
     }
 
+    // Ordered list
+    if (/^\s*\d+\.\s/.test(line)) {
+      const listItems: string[] = [];
+      while (i < lines.length && /^\s*\d+\.\s/.test(lines[i])) {
+        listItems.push(lines[i].replace(/^\s*\d+\.\s/, ''));
+        i++;
+      }
+      blocks.push(
+        '<ol>' +
+        listItems.map(item => `<li><p>${processInline(item)}</p></li>`).join('') +
+        '</ol>'
+      );
+      continue;
+    }
+
     // Paragraph (may span multiple non-blank lines)
     const paraLines: string[] = [];
-    while (i < lines.length && lines[i].trim() !== '' && !lines[i].startsWith('#') && !lines[i].startsWith('```') && !lines[i].startsWith('> ') && !/^\s*[-*+]\s/.test(lines[i]) && !/^(-{3,}|\*{3,}|_{3,})$/.test(lines[i].trim())) {
+    while (i < lines.length && lines[i].trim() !== '' && !lines[i].startsWith('#') && !lines[i].startsWith('```') && !lines[i].startsWith('> ') && !/^\s*[-*+]\s/.test(lines[i]) && !/^\s*\d+\.\s/.test(lines[i]) && !/^(-{3,}|\*{3,}|_{3,})$/.test(lines[i].trim())) {
       paraLines.push(lines[i]);
       i++;
     }

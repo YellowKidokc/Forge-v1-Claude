@@ -305,17 +305,24 @@ async fn connect_db(state: State<'_, AppState>) -> Result<String, String> {
         return Ok("Connected".to_string());
     }
 
-    // Try multiple credential combinations
-    let credentials = vec![
-        ("Yellowkid", "Moss9pep2828"),
-        ("postgres", "Yellowkid"),
-        ("lowes", "Moss9pep2828"),
-        ("david", "Moss9pep2828"),
-        ("postgres", "Moss9pep2828"),
-    ];
-    
-    for (user, pass) in credentials {
-        let database_url = format!("postgres://{}:{}@192.168.1.177:2665/theophysics", user, pass);
+    // Read database URL from environment, with fallback defaults
+    let db_url_env = std::env::var("FORGE_DATABASE_URL").ok();
+    let db_host = std::env::var("FORGE_DB_HOST").unwrap_or_else(|_| "192.168.1.177".to_string());
+    let db_port = std::env::var("FORGE_DB_PORT").unwrap_or_else(|_| "2665".to_string());
+    let db_name = std::env::var("FORGE_DB_NAME").unwrap_or_else(|_| "theophysics".to_string());
+    let db_user = std::env::var("FORGE_DB_USER").unwrap_or_else(|_| "postgres".to_string());
+    let db_pass = std::env::var("FORGE_DB_PASS").unwrap_or_else(|_| String::new());
+
+    let urls: Vec<String> = if let Some(url) = db_url_env {
+        vec![url]
+    } else if !db_pass.is_empty() {
+        vec![format!("postgres://{}:{}@{}:{}/{}", db_user, db_pass, db_host, db_port, db_name)]
+    } else {
+        // Fallback: try connecting without password
+        vec![format!("postgres://{}@{}:{}/{}", db_user, db_host, db_port, db_name)]
+    };
+
+    for database_url in &urls {
         
         match PgPoolOptions::new()
             .max_connections(5)
@@ -325,10 +332,10 @@ async fn connect_db(state: State<'_, AppState>) -> Result<String, String> {
         {
             Ok(pool) => {
                 *db_lock = Some(pool);
-                return Ok(format!("Connected as {}", user));
+                return Ok(format!("Connected as {}", db_user));
             }
             Err(e) => {
-                eprintln!("DB attempt {}: {}", user, e);
+                eprintln!("DB attempt failed: {}", e);
                 continue;
             }
         }

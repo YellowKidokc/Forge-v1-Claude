@@ -257,7 +257,7 @@ const COLOR_MAP: Record<string, string> = {
 
 function extractColor(text: string): string | null {
   // Check for hex color
-  const hexMatch = text.match(/#[0-9a-fA-F]{3,6}/);
+  const hexMatch = text.match(/#(?:[0-9a-fA-F]{6}|[0-9a-fA-F]{3})\b/);
   if (hexMatch) return hexMatch[0];
 
   // Check for named colors
