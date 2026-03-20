@@ -17,11 +17,15 @@ function escapeHtml(text: string): string {
 }
 
 function processInline(text: string): string {
-  // First escape HTML entities in the raw text, then apply markdown formatting
-  return escapeHtml(text)
+  const escaped = escapeHtml(text);
+  return escaped
     .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
     .replace(/\*(.+?)\*/g, '<em>$1</em>')
     .replace(/`(.+?)`/g, '<code>$1</code>');
+}
+
+function escapeAttribute(text: string): string {
+  return escapeHtml(text).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
 export function markdownToHtml(md: string): string {
@@ -48,7 +52,7 @@ export function markdownToHtml(md: string): string {
         i++;
       }
       i++; // skip closing ```
-      blocks.push(`<pre><code${lang ? ` class="language-${lang}"` : ''}>${codeLines.join('\n')}</code></pre>`);
+      blocks.push(`<pre><code${lang ? ` class="language-${escapeAttribute(lang)}"` : ''}>${codeLines.join('\n')}</code></pre>`);
       continue;
     }
 
@@ -107,24 +111,9 @@ export function markdownToHtml(md: string): string {
       continue;
     }
 
-    // Ordered list
-    if (/^\s*\d+\.\s/.test(line)) {
-      const listItems: string[] = [];
-      while (i < lines.length && /^\s*\d+\.\s/.test(lines[i])) {
-        listItems.push(lines[i].replace(/^\s*\d+\.\s/, ''));
-        i++;
-      }
-      blocks.push(
-        '<ol>' +
-        listItems.map(item => `<li><p>${processInline(item)}</p></li>`).join('') +
-        '</ol>'
-      );
-      continue;
-    }
-
     // Paragraph (may span multiple non-blank lines)
     const paraLines: string[] = [];
-    while (i < lines.length && lines[i].trim() !== '' && !lines[i].startsWith('#') && !lines[i].startsWith('```') && !lines[i].startsWith('> ') && !/^\s*[-*+]\s/.test(lines[i]) && !/^\s*\d+\.\s/.test(lines[i]) && !/^(-{3,}|\*{3,}|_{3,})$/.test(lines[i].trim())) {
+    while (i < lines.length && lines[i].trim() !== '' && !lines[i].startsWith('#') && !lines[i].startsWith('```') && !lines[i].startsWith('> ') && !/^\s*[-*+]\s/.test(lines[i]) && !/^(-{3,}|\*{3,}|_{3,})$/.test(lines[i].trim())) {
       paraLines.push(lines[i]);
       i++;
     }

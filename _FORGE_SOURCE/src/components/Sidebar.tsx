@@ -15,11 +15,9 @@ import {
   Bot,
 } from 'lucide-react';
 import FileTree from './FileTree';
-import ChatSidebar from './ChatSidebar';
-import PromptSnippets from './PromptSnippets';
-import SortableList, { GripVertical } from './SortableList';
 import { FileEntry, SavedNotebook } from '../lib/types';
 import { hasApiKey } from '../lib/ai';
+import { getAiRuntimeEvents } from '../lib/aiRuntime';
 
 interface SidebarProps {
   onFileSelect: (path: string) => void;
@@ -31,13 +29,10 @@ interface SidebarProps {
   refreshToken: number;
   onOpenSettings: () => void;
   onFilesSnapshotChange?: (entries: FileEntry[]) => void;
-  onSelectChatThread?: (threadId: string) => void;
-  activeChatThreadId?: string | null;
-  onUseSnippet?: (content: string) => void;
-  onReorderNotebooks?: (notebooks: SavedNotebook[]) => void;
 }
 
 type SidebarMode = 'notes' | 'chats' | 'prompts' | 'kb';
+type NotesSurface = 'content' | 'data';
 
 const Sidebar: React.FC<SidebarProps> = ({
   onFileSelect,
@@ -49,10 +44,6 @@ const Sidebar: React.FC<SidebarProps> = ({
   refreshToken,
   onOpenSettings,
   onFilesSnapshotChange,
-  onSelectChatThread,
-  activeChatThreadId,
-  onUseSnippet,
-  onReorderNotebooks,
 }) => {
   const [files, setFiles] = useState<FileEntry[]>([]);
   const [loading, setLoading] = useState(false);
@@ -60,8 +51,10 @@ const Sidebar: React.FC<SidebarProps> = ({
   const [searchQuery, setSearchQuery] = useState('');
   const [vaultInput, setVaultInput] = useState('');
   const [showVaultPicker, setShowVaultPicker] = useState(false);
-  const [apiKeySet, setApiKeySet] = useState(hasApiKey());
+  const [apiKeySet] = useState(hasApiKey());
   const [sidebarMode, setSidebarMode] = useState<SidebarMode>('notes');
+  const [notesSurface, setNotesSurface] = useState<NotesSurface>('content');
+  const [runtimeTick, setRuntimeTick] = useState(0);
 
   const setVaultHandler = async (path: string) => {
     if (!path.trim()) {
@@ -81,7 +74,12 @@ const Sidebar: React.FC<SidebarProps> = ({
     }
     setLoading(true);
     try {
-      const entries = await invoke<FileEntry[]>('get_vault_files');
+      const entries = notesSurface === 'content'
+        ? await invoke<FileEntry[]>('get_vault_files')
+        : await (async () => {
+            await invoke<string>('create_mirror');
+            return invoke<FileEntry[]>('get_mirror_files');
+          })();
       setFiles(entries);
       onFilesSnapshotChange?.(entries);
     } catch (err) {
@@ -89,7 +87,7 @@ const Sidebar: React.FC<SidebarProps> = ({
     } finally {
       setLoading(false);
     }
-  }, [activeNotebookPath, onFilesSnapshotChange]);
+  }, [activeNotebookPath, notesSurface, onFilesSnapshotChange]);
 
   const connectDb = async () => {
     try {
@@ -103,6 +101,10 @@ const Sidebar: React.FC<SidebarProps> = ({
 
   const createNewNote = async () => {
     if (!activeNotebookPath) return;
+    if (notesSurface !== 'content') {
+      alert('Switch to Content view to create source notes.');
+      return;
+    }
     const name = prompt('Note name:');
     if (!name) return;
     const filename = name.endsWith('.md') ? name : `${name}.md`;
@@ -117,6 +119,10 @@ const Sidebar: React.FC<SidebarProps> = ({
 
   const createNewFolder = async () => {
     if (!activeNotebookPath) return;
+    if (notesSurface !== 'content') {
+      alert('Switch to Content view to create source folders.');
+      return;
+    }
     const name = prompt('Folder name:');
     if (!name) return;
     try {
@@ -127,21 +133,32 @@ const Sidebar: React.FC<SidebarProps> = ({
     }
   };
 
-  // Re-check API key status when window regains focus (e.g. after Settings change)
   useEffect(() => {
-    const handler = () => setApiKeySet(hasApiKey());
-    window.addEventListener('focus', handler);
-    return () => window.removeEventListener('focus', handler);
-  }, []);
-
-  useEffect(() => {
-    void connectDb();
+    connectDb();
   }, []);
 
   useEffect(() => {
     refreshFiles();
   }, [activeNotebookPath, refreshToken, refreshFiles]);
 
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      setRuntimeTick((prev) => prev + 1);
+    }, 4000);
+    return () => window.clearInterval(interval);
+  }, []);
+
+  const runtimeEvents = getAiRuntimeEvents().slice(0, 12);
+  const promptLibrary = [
+    'Summarize this note in 5 bullets',
+    'Find contradictions in current note',
+    'Link this to the Master Equation',
+    'Extract canonical definitions',
+    'Build a sermon outline from this section',
+    'Find Stanford Encyclopedia sources',
+    'Turn this into a formal axiom',
+    'Generate outgoing and incoming links',
+  ].filter((item) => item.toLowerCase().includes(searchQuery.toLowerCase()));
 
   const knowledgeRows = files
     .filter((entry) => entry.is_dir || entry.name.toLowerCase().includes('.md'))
@@ -195,7 +212,7 @@ const Sidebar: React.FC<SidebarProps> = ({
               className="w-full bg-black/40 border border-forge-steel p-1.5 rounded text-xs outline-none focus:border-forge-ember transition-colors font-mono text-white"
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && vaultInput.trim()) {
-                  void setVaultHandler(vaultInput.trim());
+                  setVaultHandler(vaultInput.trim());
                 }
                 if (e.key === 'Escape') {
                   setShowVaultPicker(false);
@@ -205,7 +222,7 @@ const Sidebar: React.FC<SidebarProps> = ({
             />
             <div className="flex gap-1">
               <button
-                onClick={() => vaultInput.trim() && void setVaultHandler(vaultInput.trim())}
+                onClick={() => vaultInput.trim() && setVaultHandler(vaultInput.trim())}
                 className="flex-1 text-[10px] py-1 bg-forge-ember/20 text-forge-ember rounded hover:bg-forge-ember/30 transition-colors cursor-pointer"
               >
                 Save & Open
@@ -221,46 +238,35 @@ const Sidebar: React.FC<SidebarProps> = ({
         )}
 
         {savedNotebooks.length > 0 && (
-          <div className="max-h-28 overflow-y-auto pr-1">
-            <SortableList
-              items={savedNotebooks.map((n) => ({ ...n, id: n.path }))}
-              onReorder={(reordered) => onReorderNotebooks?.(reordered.map(({ id, ...rest }) => rest as SavedNotebook))}
-              className="space-y-1"
-              renderItem={(notebook, dragHandle) => {
-                const isActive = notebook.path === activeNotebookPath;
-                return (
-                  <div
-                    className={`group flex items-center gap-1 rounded border px-1.5 py-1 text-[10px] ${
-                      isActive
-                        ? 'border-forge-ember/40 bg-forge-ember/10 text-forge-ember'
-                        : 'border-forge-steel text-gray-400 hover:border-gray-600'
-                    }`}
+          <div className="space-y-1 max-h-28 overflow-y-auto pr-1">
+            {savedNotebooks.map((notebook) => {
+              const isActive = notebook.path === activeNotebookPath;
+              return (
+                <div
+                  key={notebook.path}
+                  className={`group flex items-center gap-1 rounded border px-1.5 py-1 text-[10px] ${
+                    isActive
+                      ? 'border-forge-ember/40 bg-forge-ember/10 text-forge-ember'
+                      : 'border-forge-steel text-gray-400 hover:border-gray-600'
+                  }`}
+                >
+                  <button
+                    onClick={() => onActivateNotebook(notebook.path)}
+                    title={notebook.path}
+                    className="flex-1 truncate text-left cursor-pointer"
                   >
-                    <span
-                      {...dragHandle.listeners}
-                      {...dragHandle.attributes}
-                      className="cursor-grab text-gray-600 hover:text-gray-400"
-                    >
-                      <GripVertical size={10} />
-                    </span>
-                    <button
-                      onClick={() => onActivateNotebook(notebook.path)}
-                      title={notebook.path}
-                      className="flex-1 truncate text-left cursor-pointer"
-                    >
-                      {notebook.name}
-                    </button>
-                    <button
-                      onClick={() => onRemoveNotebook(notebook.path)}
-                      title="Remove notebook"
-                      className="text-gray-600 hover:text-red-400 transition-colors cursor-pointer"
-                    >
-                      <Trash2 size={10} />
-                    </button>
-                  </div>
-                );
-              }}
-            />
+                    {notebook.name}
+                  </button>
+                  <button
+                    onClick={() => onRemoveNotebook(notebook.path)}
+                    title="Remove notebook"
+                    className="text-gray-600 hover:text-red-400 transition-colors cursor-pointer"
+                  >
+                    <Trash2 size={10} />
+                  </button>
+                </div>
+              );
+            })}
           </div>
         )}
 
@@ -305,6 +311,30 @@ const Sidebar: React.FC<SidebarProps> = ({
       {activeNotebookPath && (
         <>
           <div className="px-3 py-2 border-b border-forge-steel space-y-2">
+            {sidebarMode === 'notes' && (
+              <div className="flex items-center gap-1 rounded border border-forge-steel p-1">
+                <button
+                  onClick={() => setNotesSurface('content')}
+                  className={`flex-1 text-[10px] px-2 py-1 rounded cursor-pointer transition-colors ${
+                    notesSurface === 'content'
+                      ? 'bg-forge-ember/15 text-forge-ember border border-forge-ember/40'
+                      : 'text-gray-500 border border-transparent hover:text-gray-300'
+                  }`}
+                >
+                  Content
+                </button>
+                <button
+                  onClick={() => setNotesSurface('data')}
+                  className={`flex-1 text-[10px] px-2 py-1 rounded cursor-pointer transition-colors ${
+                    notesSurface === 'data'
+                      ? 'bg-forge-ember/15 text-forge-ember border border-forge-ember/40'
+                      : 'text-gray-500 border border-transparent hover:text-gray-300'
+                  }`}
+                >
+                  Data Mirror
+                </button>
+              </div>
+            )}
             <div className="grid grid-cols-4 gap-1">
               {modeTabs.map((tab) => (
                 <button
@@ -329,7 +359,9 @@ const Sidebar: React.FC<SidebarProps> = ({
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder={
                   sidebarMode === 'notes'
-                    ? 'Search notes...'
+                    ? notesSurface === 'content'
+                      ? 'Search notes...'
+                      : 'Search data mirror...'
                     : sidebarMode === 'chats'
                     ? 'Search talks...'
                     : sidebarMode === 'prompts'
@@ -355,18 +387,54 @@ const Sidebar: React.FC<SidebarProps> = ({
         )}
 
         {sidebarMode === 'chats' && (
-          <ChatSidebar
-            searchQuery={searchQuery}
-            onSelectThread={onSelectChatThread || (() => {})}
-            activeThreadId={activeChatThreadId || null}
-          />
+          <div className="p-3 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] uppercase tracking-widest text-gray-500">Talk Threads</span>
+              <span className="text-[10px] text-gray-600">{runtimeTick}</span>
+            </div>
+            {runtimeEvents.length === 0 && (
+              <p className="text-[11px] text-gray-600">No chats or AI feed items yet.</p>
+            )}
+            {runtimeEvents
+              .filter((item) => item.summary.toLowerCase().includes(searchQuery.toLowerCase()))
+              .map((event) => (
+                <button
+                  key={event.id}
+                  className="w-full text-left rounded border border-forge-steel bg-black/10 px-2 py-2 hover:border-forge-ember/30 cursor-pointer"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[10px] uppercase tracking-widest text-forge-ember">{event.role}</span>
+                    <span className="text-[10px] text-gray-500">{event.provider}</span>
+                  </div>
+                  <div className="text-[11px] text-gray-300 mt-1 whitespace-pre-wrap">{event.summary}</div>
+                </button>
+              ))}
+          </div>
         )}
 
         {sidebarMode === 'prompts' && (
-          <PromptSnippets
-            searchQuery={searchQuery}
-            onUseSnippet={onUseSnippet || (() => {})}
-          />
+          <div className="p-3 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] uppercase tracking-widest text-gray-500">Prompt Library</span>
+              <button
+                onClick={createNewNote}
+                className="text-[10px] px-2 py-1 rounded border border-forge-steel text-gray-400 hover:text-forge-ember cursor-pointer"
+              >
+                Add
+              </button>
+            </div>
+            {promptLibrary.map((prompt) => (
+              <div key={prompt} className="rounded border border-forge-steel bg-black/10 px-2 py-2">
+                <div className="text-xs text-gray-200">{prompt}</div>
+                <div className="mt-2 flex justify-end">
+                  <button className="text-[10px] px-2 py-1 rounded border border-forge-steel text-gray-400 hover:text-forge-ember cursor-pointer">
+                    Use now
+                  </button>
+                </div>
+              </div>
+            ))}
+            {promptLibrary.length === 0 && <p className="text-[11px] text-gray-600">No prompts match this search.</p>}
+          </div>
         )}
 
         {sidebarMode === 'kb' && (
